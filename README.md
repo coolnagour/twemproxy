@@ -1,6 +1,6 @@
 # changes on top of original twempproxy
 
-Config can be reloaded by running `sudo pkill -1 nutcracker` to sned a SIGHUP
+Config can be reloaded by running `sudo pkill -1 nutcracker` to send a SIGHUP
 
 
 If you are using AWS with read only endpoints (url contains `-ro`) then you can use configUpdater.php in a cron job to keep the config file up to date with all the DNS records behind this reader endpoint. 
