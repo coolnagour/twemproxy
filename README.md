@@ -1,3 +1,13 @@
+# changes on top of original twempproxy
+
+Config can be reloaded by running `sudo pkill -1 nutcracker` to sned a SIGHUP
+
+
+If you are using AWS with read only endpoints (url contains `-ro`) then you can use configUpdater.php in a cron job to keep the config file up to date with all the DNS records behind this reader endpoint. 
+
+Normally the read only endpoint is behind round robin DNS with a TTL of about 15 seconds, meaning if you added the read only endpoint many times in the config file hoping to use all reader endpoints, you will end up connecting to the same reader endpoint multiple times and the load will not distribute.
+
+
 # twemproxy (nutcracker) [![Build Status](https://secure.travis-ci.org/twitter/twemproxy.png)](http://travis-ci.org/twitter/twemproxy)
 
 twemproxy is a multi-process, fast and lightweight proxy for [memcached](http://www.memcached.org/) and [redis](http://redis.io/) protocol.
