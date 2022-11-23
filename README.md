@@ -126,73 +126,82 @@ Twemproxy can be configured through a YAML file specified by the -c or --conf-fi
 
 For example, the configuration file in [conf/nutcracker.yml](conf/nutcracker.yml), also shown below, configures 5 server pools with names - _alpha_, _beta_, _gamma_, _delta_ and omega. Clients that intend to send requests to one of the 10 servers in pool delta connect to port 22124 on 127.0.0.1. Clients that intend to send request to one of 2 servers in pool omega connect to unix path /tmp/gamma. Requests sent to pool alpha and omega have no timeout and might require timeout functionality to be implemented on the client side. On the other hand, requests sent to pool beta, gamma and delta timeout after 400 msec, 400 msec and 100 msec respectively when no response is received from the server. Of the 5 server pools, only pools alpha, gamma and delta are configured to use server ejection and hence are resilient to server failures. All the 5 server pools use ketama consistent hashing for key distribution with the key hasher for pools alpha, beta, gamma and delta set to fnv1a_64 while that for pool omega set to hsieh. Also only pool beta uses [nodes names](notes/recommendation.md#node-names-for-consistent-hashing) for consistent hashing, while pool alpha, gamma, delta and omega use 'host:port:weight' for consistent hashing. Finally, only pool alpha and beta can speak the redis protocol, while pool gamma, delta and omega speak memcached protocol.
 
-    alpha:
-      listen: 127.0.0.1:22121
-      hash: fnv1a_64
-      distribution: ketama
-      auto_eject_hosts: true
-      redis: true
-      server_retry_timeout: 2000
-      server_failure_limit: 1
-      servers:
-       - 127.0.0.1:6379:1
+    global:
+        worker_processes: auto      # num of workers, fallback to single process model while worker_processes is 0
+        max_openfiles: 102400       # max num of open files in every worker process
+        user: nobody                # user of worker's process, master process should be setup with root
+        group: nobody               # group of worker's process
+        worker_shutdown_timeout: 30 # terminate the old worker after worker_shutdown_timeout, unit is second
 
-    beta:
-      listen: 127.0.0.1:22122
-      hash: fnv1a_64
-      hash_tag: "{}"
-      distribution: ketama
-      auto_eject_hosts: false
-      timeout: 400
-      redis: true
-      servers:
-       - 127.0.0.1:6380:1 server1
-       - 127.0.0.1:6381:1 server2
-       - 127.0.0.1:6382:1 server3
-       - 127.0.0.1:6383:1 server4
 
-    gamma:
-      listen: 127.0.0.1:22123
-      hash: fnv1a_64
-      distribution: ketama
-      timeout: 400
-      backlog: 1024
-      preconnect: true
-      auto_eject_hosts: true
-      server_retry_timeout: 2000
-      server_failure_limit: 3
-      servers:
-       - 127.0.0.1:11212:1
-       - 127.0.0.1:11213:1
+    pools:
+        alpha:
+          listen: 127.0.0.1:22121
+          hash: fnv1a_64
+          distribution: ketama
+          auto_eject_hosts: true
+          redis: true
+          server_retry_timeout: 2000
+          server_failure_limit: 1
+          servers:
+           - 127.0.0.1:6379:1
 
-    delta:
-      listen: 127.0.0.1:22124
-      hash: fnv1a_64
-      distribution: ketama
-      timeout: 100
-      auto_eject_hosts: true
-      server_retry_timeout: 2000
-      server_failure_limit: 1
-      servers:
-       - 127.0.0.1:11214:1
-       - 127.0.0.1:11215:1
-       - 127.0.0.1:11216:1
-       - 127.0.0.1:11217:1
-       - 127.0.0.1:11218:1
-       - 127.0.0.1:11219:1
-       - 127.0.0.1:11220:1
-       - 127.0.0.1:11221:1
-       - 127.0.0.1:11222:1
-       - 127.0.0.1:11223:1
+        beta:
+          listen: 127.0.0.1:22122
+          hash: fnv1a_64
+          hash_tag: "{}"
+          distribution: ketama
+          auto_eject_hosts: false
+          timeout: 400
+          redis: true
+          servers:
+           - 127.0.0.1:6380:1 server1
+           - 127.0.0.1:6381:1 server2
+           - 127.0.0.1:6382:1 server3
+           - 127.0.0.1:6383:1 server4
 
-    omega:
-      listen: /tmp/gamma 0666
-      hash: hsieh
-      distribution: ketama
-      auto_eject_hosts: false
-      servers:
-       - 127.0.0.1:11214:100000
-       - 127.0.0.1:11215:1
+        gamma:
+          listen: 127.0.0.1:22123
+          hash: fnv1a_64
+          distribution: ketama
+          timeout: 400
+          backlog: 1024
+          preconnect: true
+          auto_eject_hosts: true
+          server_retry_timeout: 2000
+          server_failure_limit: 3
+          servers:
+           - 127.0.0.1:11212:1
+           - 127.0.0.1:11213:1
+
+        delta:
+          listen: 127.0.0.1:22124
+          hash: fnv1a_64
+          distribution: ketama
+          timeout: 100
+          auto_eject_hosts: true
+          server_retry_timeout: 2000
+          server_failure_limit: 1
+          servers:
+           - 127.0.0.1:11214:1
+           - 127.0.0.1:11215:1
+           - 127.0.0.1:11216:1
+           - 127.0.0.1:11217:1
+           - 127.0.0.1:11218:1
+           - 127.0.0.1:11219:1
+           - 127.0.0.1:11220:1
+           - 127.0.0.1:11221:1
+           - 127.0.0.1:11222:1
+           - 127.0.0.1:11223:1
+
+        omega:
+          listen: /tmp/gamma 0666
+          hash: hsieh
+          distribution: ketama
+          auto_eject_hosts: false
+          servers:
+           - 127.0.0.1:11214:100000
+           - 127.0.0.1:11215:1
 
 Finally, to make writing a syntactically correct configuration file easier, twemproxy provides a command-line argument -t or --test-conf that can be used to test the YAML configuration file for any syntax error.
 
