@@ -9,7 +9,9 @@ you will already need a config.yml file created with 2 pools. one with the read 
 */
 
 $forceUpdate = false;
-$verbose = false;
+$verbose = true;
+$nohup = false;
+
 foreach ($argv as $arg) {
 
     if (in_array($arg, ['--force', '-f'])) {
@@ -21,6 +23,11 @@ foreach ($argv as $arg) {
         $verbose = true;
         echo 'running in verbose mode' . PHP_EOL;
     }
+
+    if (in_array($arg, ['--reload', '-r'])) {
+        $nohup = true;
+        echo 'reloading' . PHP_EOL;
+    }
 }
 if (isset($argv[1]) && $argv[1] == 'force') {
     $forceUpdate = true;
@@ -28,7 +35,7 @@ if (isset($argv[1]) && $argv[1] == 'force') {
 
 $updater = new redisProxy($verbose);
 if ($forceUpdate) {
-    $updater->forceUpdate();
+    $updater->forceUpdate($nohup);
 } else {
     $updater->process();
 }
@@ -41,8 +48,8 @@ class redisProxy
 
     const CONFIG_FILE = '/usr/bin/nutcracker/conf/nutcracker.yml';
     const DYNAMIC_HOST = 'dynamicallyAdded';
-    const SLEEP_BETWEEN_DNS_CHECKS = 200;
-    const DNS_CHECKS = 10;
+    const SLEEP_BETWEEN_DNS_CHECKS = 3;
+    const DNS_CHECKS = 3;
 
     const CYAN = "\033[36m";
     const GREEN = "\033[92m";
@@ -72,29 +79,31 @@ class redisProxy
             $clearColor =  "\033[0m";
         }
 
-        echo $color . '[' .  date('Y-m-d h:i:s') . '] ' . $log . $clearColor . PHP_EOL;
+        echo $color . '[' .  date('Y-m-d H:i:s') . '] ' . $log . $clearColor . PHP_EOL;
     }
 
     public function process()
     {
         $this->logger('starting up', self::CYAN);
+        $randSleep = rand(1,5);
+        $this->logger('sleeping for ' . $randSleep . ' seconds', self::CYAN);
+        sleep($randSleep);
         $start = time();
         $this->checkForLock();
         $this->checkForNewHosts();
 
-        //check for less than the cron job time
-        while (time() < ($start + 50)) {
-            $this->checkHostHealth();
-            $this->processUpdates();
-            sleep(5);
-        }
+    
+        $this->checkHostHealth();
+        $this->processUpdates();
+        sleep(4);
+
         $this->logger('done' . self::CYAN);
     }
 
 
-    public function forceUpdate()
+    public function forceUpdate($nohup = false)
     {
-        $this->updateHosts(false);
+        $this->updateHosts($nohup);
     }
 
 
@@ -126,7 +135,6 @@ class redisProxy
 
     function checkHostHealth()
     {
-
         if (!empty($this->readHosts)) {
 
             foreach ($this->readHosts as $key => $host) {
@@ -157,13 +165,22 @@ class redisProxy
                 usleep($rand);
 
                 $this->connections[$host] = new Redis();
-                $this->connections[$host]->connect($host);
+                $this->connections[$host]->connect($host, 6379, 2.5);
             }
 
             $pongResponse = $this->connections[$host]->ping();
             if ($pongResponse == '1') {
                 if ($this->verbose) {
                     $this->logger($host . ' redis ping ok');
+                }
+                try {
+                    $write =  $this->connections[$host]->set('key','value', 10);
+                    if($write){
+                        $this->logger($host . ' we can write, but this should be a read only endpoint', self::RED);
+                        return false;
+                    }
+                } catch (Exception $e) {
+                    $this->logger($host . ' checked that is is a reader');
                 }
                 return true;
             } else {
@@ -180,31 +197,39 @@ class redisProxy
     function checkForNewHosts()
     {
 
+        $checkedHosts = [];
         $count = 0;
-        while ($count <= self::DNS_CHECKS) {
+        while ($count < self::DNS_CHECKS) {
             $count++;
 
             $dns = dns_get_record($this->read);
-
+          
             foreach ($dns as $record) {
                 if ($record['type'] === 'CNAME' && isset($record['target'])) {
 
-                    if (!in_array($record['target'], $this->readHosts)) {
+                    $host = $record['target'];
+                    if (!in_array($host, $this->readHosts)) {
 
-                        $host = $record['target'];
+                        if(!in_array($host, $checkedHosts)) {
 
-                        if ($this->isHostHealthy($host)) {
-                            $this->logger('new host detected ' . $host, self::GREEN);
-                            $this->update = true;
-                            $this->readHosts[] = $record['target'];
-                        } else {
-                            $this->logger('new host detected but it is not responding yet.. will wait until it responds: ' . $host, self::RED);
+                            if ($this->isHostHealthy($host)) {
+                                $this->logger('new host detected ' . $host, self::GREEN);
+                                $this->update = true;
+                                $this->readHosts[] = $record['target'];
+                            } else {
+                                $this->logger('new host detected but it is not responding yet.. will wait until it responds: ' . $host, self::RED);
+                            }
+                            $checkedHosts[] = $host;
+                        }else{
+                            $this->logger('we have already checked ' . $host, self::GREEN);
                         }
+                    }else{
+                        $this->logger('we know about ' . $host, self::GREEN);
                     }
                 }
             }
 
-            usleep(self::SLEEP_BETWEEN_DNS_CHECKS);
+            sleep(self::SLEEP_BETWEEN_DNS_CHECKS);
         }
     }
 
@@ -284,7 +309,7 @@ class redisProxy
         $this->logger('updating ' . self::CONFIG_FILE);
 
 
-        $extraReadHosts = '';
+        $extraReadHosts = '# The following hosts were dynamically added by the cron job ' . __FILE__ . PHP_EOL;
         $i = 1;
         foreach ($this->readHosts as $readHost) {
             $name = explode('.', $readHost);
@@ -336,9 +361,10 @@ pools:
 
         if ($NOHUP) {
             $this->logger('sending SIGHUP to nutcracker');
-            echo exec(' sudo pkill -1 nutcracker');
-            $this->logger('config reloaded, exiting loop to give it time to rest before another possible reload');
+            echo exec('sudo pkill -1 nutcracker');
+            $this->logger('config reloaded, sleeping loop to give it time to rest before another possible reload');
+            sleep(9);
         }
-        die();
+        
     }
 }
