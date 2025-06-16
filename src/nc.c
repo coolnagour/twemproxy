@@ -206,6 +206,9 @@ nc_print_run(struct instance *nci)
     loga("run, rabbit run / dig that hole, forget the sun / "
          "and when at last the work is done / don't sit down / "
          "it's time to dig another one");
+
+    loga("Twempproxy with dynamic routing capabilities V0.0.1");
+
 }
 
 static void
