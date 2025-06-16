@@ -1668,8 +1668,59 @@ server_select_best_address(struct server *server)
             return untested_server;
         }
         
+        /* Periodically probe other servers to refresh their latency measurements */
+        /* This prevents servers from getting "stuck" with old high latency readings */
+        static uint32_t probe_counter = 0;
+        probe_counter++;
+        
+        /* Every 20th selection (~20-40 seconds with typical traffic), probe a different server */
+        if (probe_counter % 20 == 0 && healthy_count > 1) {
+            uint32_t probe_idx = UINT32_MAX;
+            int64_t now = nc_usec_now();
+            
+            /* Find servers that haven't been measured recently */
+            for (i = 0; i < healthy_count; i++) {
+                uint32_t idx = healthy_servers[i];
+                if (idx != server->current_addr_idx) { /* Don't probe current server */
+                    int64_t time_since_latency_check = (now > 0 && dns->last_latency_check[idx] > 0) ? 
+                                                       (now - dns->last_latency_check[idx]) : LLONG_MAX;
+                    /* If latency hasn't been checked in 5+ minutes, probe this server */
+                    if (time_since_latency_check > 300000000LL) { /* 5 minutes */
+                        probe_idx = idx;
+                        log_warn("🔄 probing server addr %"PRIu32" for '%.*s' (latency not checked for %"PRId64"s)", 
+                                 idx, server->pname.len, server->pname.data, 
+                                 time_since_latency_check / 1000000);
+                        break;
+                    }
+                }
+            }
+            
+            if (probe_idx != UINT32_MAX) {
+                stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[probe_idx]);
+                nc_free(healthy_servers);
+                nc_free(same_zone_servers);
+                nc_free(other_zone_servers);
+                return probe_idx;
+            }
+        }
+        
         /* Apply zone-aware routing: zone_weight% preference for same-zone servers */
         rand_val = (uint32_t)rand() % 100;
+        
+        /* Occasionally (~5% of time) probe a random server to refresh latency measurements */
+        if (rand_val >= 95 && healthy_count > 1) {
+            uint32_t random_probe = healthy_servers[rand() % healthy_count];
+            if (random_probe != server->current_addr_idx) {
+                log_debug(LOG_INFO, "🎲 random latency probe: selecting addr %"PRIu32" for '%.*s' (current latency: %"PRIu32"μs)", 
+                          random_probe, server->pname.len, server->pname.data, dns->latencies[random_probe]);
+                
+                stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[random_probe]);
+                nc_free(healthy_servers);
+                nc_free(same_zone_servers);
+                nc_free(other_zone_servers);
+                return random_probe;
+            }
+        }
         
         if (same_zone_count > 0 && rand_val < pool->zone_weight) {
             /* Select from same-zone servers */
