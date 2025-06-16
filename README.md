@@ -342,6 +342,72 @@ Each server now includes a `dns_hosts` field with comprehensive details:
 
 ---
 
+## Health Checks & Automatic Recovery
+
+### How Health Monitoring Works
+
+Twemproxy uses **passive health monitoring** - it doesn't send active PING commands or connection probes to Redis servers. Instead, health is determined by monitoring actual client request failures and successes.
+
+**Health Check Process:**
+- ✅ **Successful requests** → `server_ok()` → Reset failure count to 0
+- ❌ **Failed requests** → `server_failure()` → Increment failure count
+- 🚫 **Server ejection** → When failures exceed `server_failure_limit`
+- 🔄 **Automatic retry** → After `server_retry_timeout` period
+
+### Automatic Recovery Example
+
+When a Redis server gets rebooted or temporarily fails:
+
+1. **Failure Detection** (immediate)
+   - Client requests start failing against the server
+   - Failure count increments with each failed request
+   - Server gets ejected when failures exceed `server_failure_limit`
+
+2. **Ejection Period** (configurable)
+   - Server is removed from active rotation
+   - No client traffic sent to failed server
+   - Duration controlled by `server_retry_timeout`
+
+3. **Automatic Recovery** (seamless)
+   - After timeout expires, twemproxy automatically retries the server
+   - First successful request resets failure count to 0
+   - Server immediately returns to active rotation
+
+### Configuration Example
+
+```yaml
+pools:
+    read:
+        server_retry_timeout: 10000    # Retry failed servers after 10 seconds
+        server_failure_limit: 1        # Eject server after 1 failure
+        auto_eject_hosts: true         # Enable automatic ejection/recovery
+```
+
+**Result**: A server that gets rebooted will be out of rotation for only 10 seconds, then automatically rejoin once healthy.
+
+### Enhanced Recovery for Dynamic DNS
+
+With accumulative DNS resolution (`dns_expiration_minutes`), recovery is even more resilient:
+
+- 📍 **IP addresses persist** in the address list even during outages
+- 🏥 **Health tracking** per individual IP address
+- ⏰ **Smart expiration** - only remove IPs that are both unhealthy AND not seen in DNS
+- 🔄 **Instant recovery** - healthy servers immediately resume receiving traffic
+
+### Health Check Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `auto_eject_hosts` | `false` | Enable automatic server ejection and recovery |
+| `server_failure_limit` | `2` | Number of failures before ejecting server |
+| `server_retry_timeout` | `30000` | Milliseconds before retrying ejected server |
+| `dns_expiration_minutes` | `5` | Minutes to keep IPs not seen in DNS (if healthy) |
+| `dns_health_check_interval` | `30` | Seconds between health analysis cycles |
+
+**💡 Pro Tip**: Set `server_failure_limit: 1` and `server_retry_timeout: 10000` for fast failover and recovery in high-availability setups.
+
+---
+
 ## Use Cases
 
 ### AWS ElastiCache
