@@ -24,13 +24,14 @@ RUN autoreconf -fvi && \
     ./configure \
         --prefix=/usr/local \
         --enable-debug=no \
-        --enable-stats \
         && \
     make -j$(nproc) && \
     make install DESTDIR=/tmp/install
 
 # Verify the build
-RUN /tmp/install/usr/local/sbin/nutcracker --version
+RUN /tmp/install/usr/local/sbin/nutcracker --version && \
+    echo "Checking if stats are compiled in:" && \
+    /tmp/install/usr/local/sbin/nutcracker --describe-stats | head -5
 
 # Stage 2: Runtime container (minimal)
 FROM --platform=linux/amd64 ubuntu:24.04 AS runtime
@@ -83,6 +84,4 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/local/sbin/nutcracker", \
      "--conf-file=/etc/twemproxy/nutcracker.yml", \
      "--verbose=6", \
-     "--output=/var/log/twemproxy/nutcracker.log", \
-     "--stats-port=22222", \
-     "--stats-addr=0.0.0.0"]
+     "--output=/var/log/twemproxy/nutcracker.log"]
