@@ -55,46 +55,7 @@ pools:
             - my-redis-ro.cache.amazonaws.com:6379:1
 ```
 
-### Real-World AWS ElastiCache Example
 
-```yaml
-global:
-    worker_processes: auto
-    max_openfiles: 102400
-    user: nobody
-    group: nobody
-    worker_shutdown_timeout: 30
-
-pools:
-    write:
-        listen: 127.0.0.1:6379
-        auto_eject_hosts: true
-        redis: true
-        timeout: 2000
-        server_retry_timeout: 1000
-        server_failure_limit: 5
-        server_connections: 1
-        servers:
-            - staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1
-
-    read:
-        listen: 127.0.0.1:6378
-        distribution: ketama
-        auto_eject_hosts: true
-        redis: true
-        timeout: 2000
-        server_retry_timeout: 10000
-        server_failure_limit: 1
-        server_connections: 1
-
-        # Zone-aware routing for cost optimization
-        zone_aware: true
-        zone_weight: 95             # 95% to same-AZ, 5% distributed
-        dns_resolve_interval: 30
-
-        servers:
-            - staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1
-```
 
 ---
 
@@ -430,5 +391,6 @@ With accumulative DNS resolution (`dns_expiration_minutes`), recovery is even mo
 ## License
 
 Copyright 2012 Twitter, Inc.
+Copyright 2024-2025 coolnagour
 
 Licensed under the Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
