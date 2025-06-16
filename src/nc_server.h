@@ -151,17 +151,12 @@ struct server_pool {
     unsigned           preconnect:1;         /* preconnect? */
     unsigned           redis:1;              /* redis? */
     unsigned           tcpkeepalive:1;       /* tcpkeepalive? */
-    unsigned           latency_routing:1;    /* enable latency-based routing? */
-    
-    /* Dynamic DNS and latency routing configuration */
+    /* Dynamic DNS configuration */
     int64_t            dns_resolve_interval; /* DNS re-resolution interval (usec) */
-    uint32_t           latency_weight;       /* percentage of traffic to lowest latency server (0-100) */
     
     /* Cloud-agnostic configuration */
     unsigned           zone_aware:1;         /* enable zone-aware routing? */
     uint32_t           zone_weight;          /* extra weight for same-zone servers (0-100) */
-    uint32_t           zone_latency_threshold; /* latency threshold for zone detection (usec) */
-    unsigned           cache_mode:1;         /* managed cache service mode? */
     unsigned           connection_pooling:1; /* enable connection pooling? */
     uint32_t           connection_warming;   /* pre-warm connections count */
     int64_t            connection_idle_timeout; /* close idle connections (usec) */

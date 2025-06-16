@@ -118,17 +118,9 @@ static struct command conf_pool_commands[] = {
       conf_add_server,
       offsetof(struct conf_pool, server) },
 
-    { string("latency_routing"),
-      conf_set_bool,
-      offsetof(struct conf_pool, latency_routing) },
-
     { string("dns_resolve_interval"),
       conf_set_num,
       offsetof(struct conf_pool, dns_resolve_interval) },
-
-    { string("latency_weight"),
-      conf_set_num,
-      offsetof(struct conf_pool, latency_weight) },
 
     /* Cloud-agnostic configuration options */
     { string("zone_aware"),
@@ -139,13 +131,7 @@ static struct command conf_pool_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, zone_weight) },
 
-    { string("zone_latency_threshold"),
-      conf_set_num,
-      offsetof(struct conf_pool, zone_latency_threshold) },
 
-    { string("cache_mode"),
-      conf_set_bool,
-      offsetof(struct conf_pool, cache_mode) },
 
     { string("connection_pooling"),
       conf_set_bool,
@@ -337,15 +323,11 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->server_connections = CONF_UNSET_NUM;
     cp->server_retry_timeout = CONF_UNSET_NUM;
     cp->server_failure_limit = CONF_UNSET_NUM;
-    cp->latency_routing = CONF_UNSET_NUM;
     cp->dns_resolve_interval = CONF_UNSET_NUM;
-    cp->latency_weight = CONF_UNSET_NUM;
     
     /* Cloud-agnostic initialization */
     cp->zone_aware = CONF_UNSET_NUM;
     cp->zone_weight = CONF_UNSET_NUM;
-    cp->zone_latency_threshold = CONF_UNSET_NUM;
-    cp->cache_mode = CONF_UNSET_NUM;
     cp->connection_pooling = CONF_UNSET_NUM;
     cp->connection_warming = CONF_UNSET_NUM;
     cp->connection_idle_timeout = CONF_UNSET_NUM;
@@ -460,16 +442,12 @@ conf_pool_each_transform(void *elem, void *data)
     sp->auto_eject_hosts = cp->auto_eject_hosts ? 1 : 0;
     sp->preconnect = cp->preconnect ? 1 : 0;
     
-    /* Dynamic DNS and latency routing configuration */
-    sp->latency_routing = cp->latency_routing ? 1 : 0;
+    /* Dynamic DNS configuration */
     sp->dns_resolve_interval = (int64_t)cp->dns_resolve_interval * 1000000LL; /* convert to microseconds */
-    sp->latency_weight = (uint32_t)cp->latency_weight;
     
     /* Cloud-agnostic configuration */
     sp->zone_aware = cp->zone_aware ? 1 : 0;
     sp->zone_weight = (uint32_t)cp->zone_weight;
-    sp->zone_latency_threshold = (uint32_t)cp->zone_latency_threshold;
-    sp->cache_mode = cp->cache_mode ? 1 : 0;
     sp->connection_pooling = cp->connection_pooling ? 1 : 0;
     sp->connection_warming = (uint32_t)cp->connection_warming;
     sp->connection_idle_timeout = (int64_t)cp->connection_idle_timeout * 1000000LL; /* convert to microseconds */
@@ -1624,19 +1602,8 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
         cp->server_failure_limit = CONF_DEFAULT_SERVER_FAILURE_LIMIT;
     }
 
-    if (cp->latency_routing == CONF_UNSET_NUM) {
-        cp->latency_routing = CONF_DEFAULT_LATENCY_ROUTING;
-    }
-
     if (cp->dns_resolve_interval == CONF_UNSET_NUM) {
         cp->dns_resolve_interval = CONF_DEFAULT_DNS_RESOLVE_INTERVAL;
-    }
-
-    if (cp->latency_weight == CONF_UNSET_NUM) {
-        cp->latency_weight = CONF_DEFAULT_LATENCY_WEIGHT;
-    } else if (cp->latency_weight > 100) {
-        log_error("conf: directive \"latency_weight:\" must be between 0 and 100");
-        return NC_ERROR;
     }
 
     /* Cloud-agnostic defaults */
@@ -1651,13 +1618,7 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
         return NC_ERROR;
     }
 
-    if (cp->zone_latency_threshold == CONF_UNSET_NUM) {
-        cp->zone_latency_threshold = CONF_DEFAULT_ZONE_LATENCY_THRESHOLD;
-    }
 
-    if (cp->cache_mode == CONF_UNSET_NUM) {
-        cp->cache_mode = CONF_DEFAULT_CACHE_MODE;
-    }
 
     if (cp->connection_pooling == CONF_UNSET_NUM) {
         cp->connection_pooling = CONF_DEFAULT_CONNECTION_POOLING;

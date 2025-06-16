@@ -1295,15 +1295,6 @@ server_select_best_address(struct server *server)
         return 0;
     }
     
-    /* If latency routing is disabled, just pick first healthy address */
-    if (!pool->latency_routing) {
-        for (i = 0; i < dns->naddresses; i++) {
-            if (dns->failure_counts[i] <= 3) {
-                return i;
-            }
-        }
-        return 0;
-    }
     
     /* Allocate array to track healthy servers */
     healthy_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
@@ -1316,10 +1307,8 @@ server_select_best_address(struct server *server)
         server_detect_zones_by_latency(server);
     }
     
-    /* Cache endpoint discovery if enabled */
-    if (pool->cache_mode) {
-        server_discover_cache_endpoints(server);
-    }
+    /* Cache endpoint discovery (always enabled for cache services) */
+    server_discover_cache_endpoints(server);
     
     /* Find best address and collect all healthy servers */
     for (i = 0; i < dns->naddresses; i++) {
@@ -1369,66 +1358,91 @@ server_select_best_address(struct server *server)
         return best_idx;
     }
     
-    /* Log all healthy servers with their latencies for selection visibility */
-    log_debug(LOG_VERB, "server selection for '%.*s': %"PRIu32" healthy servers, weight: %"PRIu32"%%",
-              server->pname.len, server->pname.data, healthy_count, pool->latency_weight);
-    for (i = 0; i < healthy_count; i++) {
-        uint32_t idx = healthy_servers[i];
-        log_debug(LOG_VVERB, "  candidate[%"PRIu32"]: latency=%"PRIu32"us, failures=%"PRIu32"%s",
-                  idx, dns->latencies[idx], dns->failure_counts[idx],
-                  (idx == best_idx) ? " [FASTEST]" : "");
-    }
-    
-    /* Apply weighted routing: latency_weight% to best server, remainder split among all others */
-    rand_val = (uint32_t)rand() % 100;
-    
-    if (rand_val < pool->latency_weight) {
-        /* Send to best server */
-        stats_server_incr(pool->ctx, server, latency_fastest_sel);
-        stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[best_idx]);
-        nc_free(healthy_servers);
-        log_debug(LOG_INFO, "→ selected FASTEST address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, rand: %"PRIu32" < %"PRIu32"%%)",
-                  best_idx, server->pname.len, server->pname.data, 
-                  dns->latencies[best_idx], rand_val, pool->latency_weight);
-        return best_idx;
-    }
-    
-    /* Distribute remaining traffic equally among all other healthy servers */
-    uint32_t other_servers_count = 0;
-    uint32_t *other_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
-    if (other_servers == NULL) {
-        nc_free(healthy_servers);
-        return best_idx; /* Fallback to best server */
-    }
-    
-    /* Collect all healthy servers except the best one */
-    for (i = 0; i < healthy_count; i++) {
-        if (healthy_servers[i] != best_idx) {
-            other_servers[other_servers_count] = healthy_servers[i];
-            other_servers_count++;
+    /* Zone-aware server selection with high preference for same-zone servers */
+    if (pool->zone_aware && dns->zone_ids != NULL) {
+        uint32_t same_zone_count = 0;
+        uint32_t *same_zone_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
+        uint32_t *other_zone_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
+        uint32_t other_zone_count = 0;
+        
+        if (same_zone_servers == NULL || other_zone_servers == NULL) {
+            if (same_zone_servers) nc_free(same_zone_servers);
+            if (other_zone_servers) nc_free(other_zone_servers);
+            nc_free(healthy_servers);
+            return best_idx;
+        }
+        
+        /* Separate servers by zone */
+        for (i = 0; i < healthy_count; i++) {
+            uint32_t idx = healthy_servers[i];
+            if (dns->zone_ids[idx] == dns->local_zone_id) {
+                same_zone_servers[same_zone_count] = idx;
+                same_zone_count++;
+            } else {
+                other_zone_servers[other_zone_count] = idx;
+                other_zone_count++;
+            }
+        }
+        
+        log_debug(LOG_VERB, "🌍 zone routing for '%.*s': %"PRIu32" same-zone, %"PRIu32" other-zone servers (zone_weight: %"PRIu32"%%)", 
+                  server->pname.len, server->pname.data, same_zone_count, other_zone_count, pool->zone_weight);
+        
+        /* Apply zone-aware routing: zone_weight% preference for same-zone servers */
+        rand_val = (uint32_t)rand() % 100;
+        
+        if (same_zone_count > 0 && rand_val < pool->zone_weight) {
+            /* Select from same-zone servers */
+            selected_idx = same_zone_servers[rand() % same_zone_count];
+            stats_server_incr(pool->ctx, server, same_zone_selections);
+            stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[selected_idx]);
+            
+            nc_free(healthy_servers);
+            nc_free(same_zone_servers);
+            nc_free(other_zone_servers);
+            
+            log_debug(LOG_INFO, "→ selected SAME-ZONE address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" < %"PRIu32"%%)",
+                      selected_idx, server->pname.len, server->pname.data, 
+                      dns->latencies[selected_idx], dns->zone_ids[selected_idx], rand_val, pool->zone_weight);
+            return selected_idx;
+        }
+        
+        /* Select from all healthy servers (distributed) */
+        if (healthy_count > 0) {
+            selected_idx = healthy_servers[rand() % healthy_count];
+            
+            if (dns->zone_ids[selected_idx] != dns->local_zone_id) {
+                stats_server_incr(pool->ctx, server, cross_zone_selections);
+            } else {
+                stats_server_incr(pool->ctx, server, same_zone_selections);
+            }
+            stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[selected_idx]);
+            
+            nc_free(healthy_servers);
+            nc_free(same_zone_servers);
+            nc_free(other_zone_servers);
+            
+            log_debug(LOG_INFO, "→ selected DISTRIBUTED address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" >= %"PRIu32"%%)",
+                      selected_idx, server->pname.len, server->pname.data, 
+                      dns->latencies[selected_idx], dns->zone_ids[selected_idx], rand_val, pool->zone_weight);
+            return selected_idx;
+        }
+        
+        nc_free(same_zone_servers);
+        nc_free(other_zone_servers);
+    } else {
+        /* No zone awareness - just pick the lowest latency server */
+        if (healthy_count > 0) {
+            selected_idx = best_idx;
+            stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[best_idx]);
+            
+            log_debug(LOG_INFO, "→ selected LOWEST-LATENCY address %"PRIu32" for '%.*s' (latency: %"PRIu32"us)",
+                      best_idx, server->pname.len, server->pname.data, dns->latencies[best_idx]);
         }
     }
     
-    if (other_servers_count == 0) {
-        /* No other servers available, use best */
-        nc_free(healthy_servers);
-        nc_free(other_servers);
-        return best_idx;
-    }
-    
-    /* Randomly select from other servers with equal probability */
-    selected_idx = other_servers[rand() % other_servers_count];
-    
-    stats_server_incr(pool->ctx, server, latency_distributed_sel);
-    stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[selected_idx]);
-    
-    log_debug(LOG_INFO, "→ selected DISTRIBUTED address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, rand: %"PRIu32" >= %"PRIu32"%%, %"PRIu32" alternatives)",
-              selected_idx, server->pname.len, server->pname.data, 
-              dns->latencies[selected_idx], rand_val, pool->latency_weight, other_servers_count);
-    
+    /* Fallback cleanup and return */
     nc_free(healthy_servers);
-    nc_free(other_servers);
-    return selected_idx;
+    return best_idx;
 }
 
 rstatus_t
@@ -1512,16 +1526,12 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         "  \"read_hosts\": {\n"
         "    \"type\": \"dynamic\",\n"
         "    \"hostname\": \"%.*s\",\n"
-        "    \"latency_routing\": %s,\n"
-        "    \"latency_weight\": %"PRIu32",\n"
         "    \"dns_resolve_interval\": %"PRId64",\n"
         "    \"last_resolved\": %"PRId64",\n"
         "    \"addresses\": %"PRIu32",\n"
         "    \"current_address\": %"PRIu32",\n"
         "    \"address_details\": [\n",
         dns->hostname.len, dns->hostname.data,
-        pool->latency_routing ? "true" : "false",
-        pool->latency_weight,
         dns->resolve_interval / 1000000, /* convert to seconds */
         dns->last_resolved,
         dns->naddresses,
@@ -1582,19 +1592,18 @@ rstatus_t
 server_detect_zones_by_latency(struct server *server)
 {
     struct server_dns *dns;
-    struct server_pool *pool;
     int64_t now;
-    uint32_t i, j;
-    uint32_t threshold;
+    uint32_t i;
+    uint32_t min_latency, max_latency, avg_latency, total_latency;
+    uint32_t low_latency_threshold;
+    uint32_t healthy_count = 0;
     
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
         return NC_ERROR;
     }
     
     dns = server->dns;
-    pool = server->owner;
     now = nc_usec_now();
-    threshold = pool->zone_latency_threshold;
     
     /* Rate limit zone analysis - check every 2 minutes max */
     if ((now - dns->last_zone_analysis) < 120000000LL) {
@@ -1615,60 +1624,77 @@ server_detect_zones_by_latency(struct server *server)
         }
     }
     
-    /* Find the server with lowest latency (assume it's in our local zone) */
-    uint32_t min_latency = UINT32_MAX;
-    uint32_t local_addr_idx = 0;
+    /* Calculate latency statistics for healthy servers only */
+    min_latency = UINT32_MAX;
+    max_latency = 0;
+    total_latency = 0;
     
     for (i = 0; i < dns->naddresses; i++) {
-        if (dns->latencies[i] < min_latency && dns->failure_counts[i] <= 2) {
-            min_latency = dns->latencies[i];
-            local_addr_idx = i;
+        if (dns->failure_counts[i] <= 2) { /* Only consider healthy servers */
+            healthy_count++;
+            total_latency += dns->latencies[i];
+            if (dns->latencies[i] < min_latency) {
+                min_latency = dns->latencies[i];
+            }
+            if (dns->latencies[i] > max_latency) {
+                max_latency = dns->latencies[i];
+            }
         }
     }
     
-    /* Assign zone IDs based on latency clustering */
+    if (healthy_count == 0) {
+        return NC_OK;
+    }
+    
+    avg_latency = total_latency / healthy_count;
+    
+    /* 
+     * Auto-detect low latency threshold using statistical outlier detection:
+     * Servers with latency <= (min + 25% of range) are considered "local zone"
+     * This groups the lowest latency servers together automatically
+     */
+    uint32_t latency_range = max_latency - min_latency;
+    low_latency_threshold = min_latency + (latency_range / 4); /* 25% above minimum */
+    
+    /* Ensure threshold is reasonable - at least allow servers within 10ms of minimum */
+    uint32_t min_threshold = min_latency + 10000; /* 10ms */
+    if (low_latency_threshold < min_threshold) {
+        low_latency_threshold = min_threshold;
+    }
+    
+    /* Assign zone IDs based on statistical grouping */
     dns->local_zone_id = 1; /* Local zone is always 1 */
     dns->next_zone_id = 2;
     
     for (i = 0; i < dns->naddresses; i++) {
-        uint32_t latency_diff = (dns->latencies[i] > min_latency) ? 
-                               (dns->latencies[i] - min_latency) : 0;
+        if (dns->failure_counts[i] > 2) {
+            dns->zone_ids[i] = 99; /* Unhealthy zone */
+            continue;
+        }
         
-        if (latency_diff <= threshold) {
-            /* Same zone - low latency difference */
+        if (dns->latencies[i] <= low_latency_threshold) {
+            /* Local zone - statistically low latency group */
             dns->zone_ids[i] = dns->local_zone_id;
-            log_debug(LOG_VERB, "🌍 addr %"PRIu32" assigned to LOCAL zone %"PRIu32" (latency diff: %"PRIu32"us)", 
-                      i, dns->zone_ids[i], latency_diff);
+            log_debug(LOG_VERB, "🌍 addr %"PRIu32" assigned to LOCAL zone %"PRIu32" (latency: %"PRIu32"us, threshold: %"PRIu32"us)", 
+                      i, dns->zone_ids[i], dns->latencies[i], low_latency_threshold);
         } else {
-            /* Different zone - check if we can group with existing zones */
-            uint32_t assigned_zone = 0;
-            
-            for (j = 0; j < i; j++) {
-                if (dns->zone_ids[j] > dns->local_zone_id) {
-                    uint32_t other_latency_diff = (dns->latencies[j] > min_latency) ? 
-                                                  (dns->latencies[j] - min_latency) : 0;
-                    
-                    /* If latencies are similar, group them in the same zone */
-                    if (abs((int)latency_diff - (int)other_latency_diff) <= (threshold / 2)) {
-                        assigned_zone = dns->zone_ids[j];
-                        break;
-                    }
-                }
-            }
-            
-            if (assigned_zone == 0) {
-                /* Create new zone */
-                assigned_zone = dns->next_zone_id++;
-            }
-            
-            dns->zone_ids[i] = assigned_zone;
-            log_debug(LOG_VERB, "🌍 addr %"PRIu32" assigned to REMOTE zone %"PRIu32" (latency diff: %"PRIu32"us)", 
-                      i, dns->zone_ids[i], latency_diff);
+            /* Remote zone - higher latency */
+            dns->zone_ids[i] = dns->next_zone_id;
+            log_debug(LOG_VERB, "🌍 addr %"PRIu32" assigned to REMOTE zone %"PRIu32" (latency: %"PRIu32"us, threshold: %"PRIu32"us)", 
+                      i, dns->zone_ids[i], dns->latencies[i], low_latency_threshold);
         }
     }
     
-    log_debug(LOG_INFO, "🌍 detected %"PRIu32" zones for server '%.*s' (threshold: %"PRIu32"us)", 
-              dns->next_zone_id - 1, server->pname.len, server->pname.data, threshold);
+    /* Increment next_zone_id only if we actually assigned remote zones */
+    for (i = 0; i < dns->naddresses; i++) {
+        if (dns->zone_ids[i] == dns->next_zone_id) {
+            dns->next_zone_id++;
+            break;
+        }
+    }
+    
+    log_debug(LOG_INFO, "🌍 auto-detected %"PRIu32" zones for server '%.*s' (low-latency threshold: %"PRIu32"us, range: %"PRIu32"us)", 
+              dns->next_zone_id - 1, server->pname.len, server->pname.data, low_latency_threshold, latency_range);
     
     return NC_OK;
 }
@@ -1856,10 +1882,7 @@ server_discover_cache_endpoints(struct server *server)
     dns = server->dns;
     pool = server->owner;
     
-    /* Only proceed if cache mode is enabled */
-    if (!pool->cache_mode) {
-        return NC_OK;
-    }
+    /* Cache endpoint discovery (always enabled for cache services) */
     
     /* Check if hostname looks like a managed cache service endpoint */
     if (dns->hostname.len > 20 && 

@@ -49,7 +49,6 @@ RUN useradd -r -s /bin/false -d /var/lib/twemproxy twemproxy && \
 
 # Copy binary and config from builder
 COPY --from=builder /tmp/install/usr/local/sbin/nutcracker /usr/local/sbin/
-COPY --from=builder /tmp/install/usr/local/bin/nutcracker /usr/local/bin/
 COPY conf/*.yml /etc/twemproxy/
 
 # Create default configuration
@@ -67,11 +66,8 @@ pools:
         redis: true
         
         # Enable cloud zone detection
-        latency_routing: true
-        latency_weight: 60
         zone_aware: true
-        zone_weight: 30
-        zone_latency_threshold: 50000
+        zone_weight: 99
         
         # Connection optimization
         connection_pooling: true
@@ -87,6 +83,7 @@ pools:
         listen: 0.0.0.0:6379
         redis: true
         zone_aware: true
+        zone_weight: 99
         connection_pooling: true
         
         servers:
@@ -95,7 +92,7 @@ EOF
 
 # Set permissions
 RUN chmod 644 /etc/twemproxy/nutcracker.yml && \
-    chmod +x /usr/local/sbin/nutcracker /usr/local/bin/nutcracker
+    chmod +x /usr/local/sbin/nutcracker
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

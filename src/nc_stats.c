@@ -93,7 +93,6 @@ stats_describe(void)
     log_stderr("  zones_detected       \"number of latency-based zones detected\"");
     log_stderr("  same_zone_selections \"# times same-zone server was selected\"");
     log_stderr("  cross_zone_selections \"# times cross-zone server was selected\"");
-    log_stderr("  cache_mode_active    \"managed cache service optimization status\"");
     log_stderr("  connection_pool_hits \"# connection pool cache hits\"");
     log_stderr("  connection_pool_miss \"# connection pool cache misses\"");
     log_stderr("  health_score_avg     \"average health score across all servers\"");
@@ -1589,11 +1588,11 @@ stats_show_read_hosts(struct array *server_pool)
         nserver = array_n(&sp->server);
         
         log_stderr("  pool '%.*s':", sp->name.len, sp->name.data);
-        log_stderr("    latency_routing: %s", sp->latency_routing ? "enabled" : "disabled");
-        if (sp->latency_routing) {
-            log_stderr("    latency_weight: %"PRIu32"%%", sp->latency_weight);
-            log_stderr("    dns_resolve_interval: %"PRId64" seconds", sp->dns_resolve_interval / 1000000);
+        log_stderr("    zone_aware: %s", sp->zone_aware ? "enabled" : "disabled");
+        if (sp->zone_aware) {
+            log_stderr("    zone_weight: %"PRIu32"%%", sp->zone_weight);
         }
+        log_stderr("    dns_resolve_interval: %"PRId64" seconds", sp->dns_resolve_interval / 1000000);
 
         for (j = 0; j < nserver; j++) {
             server = array_get(&sp->server, j);

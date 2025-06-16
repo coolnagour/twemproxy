@@ -61,15 +61,11 @@
 #define CONF_DEFAULT_MAX_OPENFILES           102400
 #define CONF_DEFAULT_USER                    "nobody"
 #define CONF_DEFAULT_GROUP                   "nobody"
-#define CONF_DEFAULT_LATENCY_ROUTING         false
 #define CONF_DEFAULT_DNS_RESOLVE_INTERVAL    30         /* in seconds */
-#define CONF_DEFAULT_LATENCY_WEIGHT          80         /* percentage */
 
 /* Cloud-agnostic defaults */
 #define CONF_DEFAULT_ZONE_AWARE              false
 #define CONF_DEFAULT_ZONE_WEIGHT             25         /* extra weight for same-zone servers */
-#define CONF_DEFAULT_ZONE_LATENCY_THRESHOLD  50000      /* zone detection threshold in usec */
-#define CONF_DEFAULT_CACHE_MODE              false      /* managed cache service mode */
 #define CONF_DEFAULT_CONNECTION_POOLING      false
 #define CONF_DEFAULT_CONNECTION_WARMING      0
 #define CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT 300        /* in seconds */
@@ -117,15 +113,11 @@ struct conf_pool {
     int                server_retry_timeout;  /* server_retry_timeout: in msec */
     int                server_failure_limit;  /* server_failure_limit: */
     struct array       server;                /* servers: conf_server[] */
-    int                latency_routing;       /* latency_routing: enable latency-based routing */
     int                dns_resolve_interval;  /* dns_resolve_interval: DNS re-resolution interval in seconds */
-    int                latency_weight;        /* latency_weight: percentage of traffic to lowest latency server (0-100) */
     
     /* Cloud-agnostic configuration */
     int                zone_aware;            /* zone_aware: enable zone-aware routing */
     int                zone_weight;           /* zone_weight: extra weight for same-zone servers */
-    int                zone_latency_threshold; /* zone_latency_threshold: threshold for zone detection in usec */
-    int                cache_mode;            /* cache_mode: managed cache service mode */
     int                connection_pooling;    /* connection_pooling: enable connection pooling */
     int                connection_warming;    /* connection_warming: pre-warm connections count */
     int                connection_idle_timeout; /* connection_idle_timeout: idle timeout in seconds */

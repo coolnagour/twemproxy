@@ -1,41 +1,22 @@
-# twemproxy (nutcracker) - Enhanced with Dynamic DNS & Latency-Based Routing
+# twemproxy (nutcracker) - Enhanced with Zone-Aware Routing
 
 ## 🚀 What's Different from Original Twemproxy?
 
-This fork adds **dynamic DNS resolution** and **latency-based server selection** for Redis read replicas, eliminating the need for external scripts and config file reloading.
+This enhanced version adds **automatic zone-aware routing** for Redis caching, optimized specifically for cloud environments like AWS, GCP, and Azure. It automatically routes most traffic to same-availability-zone servers to reduce costs and latency.
 
-### ✨ New Features:
-- **🎯 Latency-Based Routing**: Automatically routes traffic to the lowest latency Redis servers
-- **⚖️ Weighted Traffic Distribution**: Configure percentage split (e.g., 80% to fastest server, 20% to second-best)
+### ✨ Key Features:
+- **🌍 Automatic Zone Detection**: Intelligently groups servers by latency patterns (no manual configuration needed)
+- **💰 Cost Optimization**: Routes most traffic to same-AZ servers to minimize cross-zone data transfer costs
 - **🔄 Dynamic DNS Resolution**: Automatically discovers new/removed Redis servers without restarts
-- **📊 Real-time Latency Measurement**: Measures actual connection latency during normal operations
-- **⚙️ Configurable per Pool**: Enable/disable features independently for read vs write pools
+- **📊 Real-time Latency Measurement**: Continuously measures connection latency for intelligent routing
 - **🛡️ Automatic Failover**: Seamlessly handles server failures and DNS changes
-
-### 🌍 Cloud Multi-Zone Optimizations:
-- **🏢 Zone Awareness**: Automatically detects zones based on latency patterns (reduces costs & latency)
-- **⚡ Managed Cache Integration**: Enhanced support for cloud cache service endpoints and scaling
-- **🔒 TLS Support**: Built-in support for TLS encryption and certificate verification
-- **🏥 Enhanced Health Checking**: Advanced health monitoring with failure threshold controls
-- **🔗 Connection Pooling**: Intelligent connection management with warming and idle timeout
-- **📈 Cost Optimization**: Minimizes cross-zone data transfer charges through smart routing
+- **⚙️ Cache Optimized**: Built specifically for Redis/cache services (not databases)
 
 ---
 
 ## Quick Start
 
-### 1. Build from Source
-```bash
-git clone <this-repo>
-cd twemproxy
-autoreconf -fvi
-./configure
-make
-sudo make install
-```
-
-### 2. Create Configuration
-Create `nutcracker.yml` with dynamic DNS support:
+### Basic Same-AZ Configuration
 
 ```yaml
 global:
@@ -44,140 +25,87 @@ global:
     group: nobody
 
 pools:
-    redis_read:
+    # Write pool (single primary)
+    write:
+        listen: 127.0.0.1:6379
+        redis: true
+        auto_eject_hosts: true
+        timeout: 2000
+        server_retry_timeout: 1000
+        server_failure_limit: 5
+        servers:
+            - my-redis-primary.cache.amazonaws.com:6379:1
+
+    # Read pool with zone-aware routing
+    read:
         listen: 127.0.0.1:6378
         redis: true
         auto_eject_hosts: true
-        
-        # Dynamic DNS and latency-based routing
-        latency_routing: true           # Enable smart routing
-        dns_resolve_interval: 30        # Re-check DNS every 30 seconds  
-        latency_weight: 50              # 50% to fastest, 50% distributed among all others
-        
-        servers:
-            - redis-cluster-ro.us-east-1.cache.amazonaws.com:6379:1
+        timeout: 2000
+        server_retry_timeout: 10000
+        server_failure_limit: 1
 
-    redis_write:
+        # Zone-aware routing - sends 99% traffic to same-AZ
+        zone_aware: true
+        zone_weight: 99             # 99% preference for same-AZ servers
+        dns_resolve_interval: 30    # Re-check DNS every 30 seconds
+
+        servers:
+            - my-redis-ro.cache.amazonaws.com:6379:1
+```
+
+### Real-World AWS ElastiCache Example
+
+```yaml
+global:
+    worker_processes: auto
+    max_openfiles: 102400
+    user: nobody
+    group: nobody
+    worker_shutdown_timeout: 30
+
+pools:
+    write:
         listen: 127.0.0.1:6379
+        auto_eject_hosts: true
         redis: true
+        timeout: 2000
+        server_retry_timeout: 1000
+        server_failure_limit: 5
+        server_connections: 1
         servers:
-            - redis-cluster.us-east-1.cache.amazonaws.com:6379:1
-```
+            - staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1
 
-### 3. Run
-```bash
-nutcracker -c nutcracker.yml -v 6
-```
-
-### 4. Test
-```bash
-# Read traffic (will route to lowest latency server)
-redis-cli -h 127.0.0.1 -p 6378 GET mykey
-
-# Write traffic (normal routing)
-redis-cli -h 127.0.0.1 -p 6379 SET mykey value
-```
-
----
-
-## Cloud Configuration Examples
-
-### 🔥 Managed Redis Cluster
-```yaml
-pools:
-    redis_read:
+    read:
         listen: 127.0.0.1:6378
+        distribution: ketama
+        auto_eject_hosts: true
         redis: true
-        
-        # Core latency routing
-        latency_routing: true
-        latency_weight: 60                    # 60% to fastest, 40% distributed
-        dns_resolve_interval: 15              # Managed caches scale frequently
-        
-        # Cloud zone optimizations
-        zone_aware: true                      # Enable zone-aware routing
-        zone_weight: 30                       # +30% weight for same-zone servers
-        zone_latency_threshold: 50000         # 50ms threshold for zone detection
-        cache_mode: true                      # Managed cache optimizations
-        
-        # Connection pooling
-        connection_pooling: true
-        connection_warming: 1                 # Pre-warm connections
-        connection_idle_timeout: 300
-        
-        # Enhanced health monitoring
-        dns_failure_threshold: 2              # Faster failover
-        
-        servers:
-            - redis-cluster-ro.cache.example.com:6379:1
-```
+        timeout: 2000
+        server_retry_timeout: 10000
+        server_failure_limit: 1
+        server_connections: 1
 
-### 🗄️ Managed Database Cluster
-```yaml
-pools:
-    database_read:
-        listen: 127.0.0.1:3306
-        
-        # Database-optimized settings
-        latency_routing: true
-        latency_weight: 70                    # Prefer fastest reader
-        dns_resolve_interval: 30              # Managed databases change less frequently
-        
-        # Zone optimization (reduces cross-zone charges)
+        # Zone-aware routing for cost optimization
         zone_aware: true
-        zone_weight: 25                       # Same-zone preference
-        zone_latency_threshold: 30000         # 30ms threshold for DB zones
-        
-        # Database connection settings
-        connection_pooling: true
-        connection_warming: 2
-        connection_idle_timeout: 600          # Longer for DB connections
-        
-        servers:
-            - database-cluster-ro.example.com:3306:1
-```
+        zone_weight: 95             # 95% to same-AZ, 5% distributed
+        dns_resolve_interval: 30
 
-### 🔒 Secure Managed Cache with TLS
-```yaml
-pools:
-    secure_redis:
-        listen: 127.0.0.1:6380
-        redis: true
-        
-        latency_routing: true
-        zone_aware: true
-        cache_mode: true
-        
-        # TLS configuration
-        tls_enabled: true                     # Enable encryption in transit
-        tls_verify_peer: true                 # Verify certificates
-        
         servers:
-            - secure-cache-ro.example.com:6380:1
+            - staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1
 ```
-
-See `conf/cloud-*.yml` for complete examples.
 
 ---
 
-## Configuration Options
+## Configuration Reference
 
-### Core Latency-Based Routing
+### Zone-Aware Routing
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `latency_routing` | boolean | `false` | Enable latency-based server selection |
+| `zone_aware` | boolean | `false` | Enable automatic zone detection and routing |
+| `zone_weight` | integer | `25` | Percentage preference for same-zone servers (0-100) |
 | `dns_resolve_interval` | integer | `30` | DNS re-resolution interval (seconds) |
-| `latency_weight` | integer | `80` | Percentage of traffic to lowest latency server (0-100) |
-
-### Cloud Multi-Zone Optimizations
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `zone_aware` | boolean | `false` | Enable zone aware routing (latency-based) |
-| `zone_weight` | integer | `25` | Extra weight bonus for same-zone servers (0-100) |
-| `zone_latency_threshold` | integer | `50000` | Latency threshold for zone detection (microseconds) |
-| `cache_mode` | boolean | `false` | Enable managed cache service optimizations |
 
 ### Connection Management
 
@@ -187,7 +115,7 @@ See `conf/cloud-*.yml` for complete examples.
 | `connection_warming` | integer | `0` | Number of connections to pre-warm |
 | `connection_idle_timeout` | integer | `300` | Close idle connections after N seconds |
 
-### Enhanced Health Monitoring
+### Health & Monitoring
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -201,75 +129,47 @@ See `conf/cloud-*.yml` for complete examples.
 | `tls_enabled` | boolean | `false` | Enable TLS encryption |
 | `tls_verify_peer` | boolean | `true` | Verify TLS peer certificates |
 
-### Traffic Distribution Examples
+---
 
-**Example 1: Pure Latency-Based (100% to fastest)**
-```yaml
-latency_routing: true
-latency_weight: 100    # All traffic to fastest server
-```
-*With 6 servers: 100% → Server A (fastest), 0% → all others*
+## Zone Weight Examples
 
-**Example 2: Balanced Load Distribution (50/50 split)**
+### Cost-Optimized (Minimal Cross-AZ Traffic)
 ```yaml
-latency_routing: true  
-latency_weight: 50     # 50% to fastest, 50% split among all others
-```
-*With 6 servers: 50% → Server A (fastest), 10% each → Servers B,C,D,E,F*
-
-**Example 3: Zone-Aware Distribution**
-```yaml
-latency_routing: true
-latency_weight: 60
 zone_aware: true
-zone_weight: 30              # Same-zone servers get +30% weight bonus
-zone_latency_threshold: 50000 # 50ms threshold for zone detection
+zone_weight: 99    # 99% same-AZ, 1% cross-AZ
 ```
-*Result: Same-zone servers are preferred, but all healthy servers are used*
+*Minimizes data transfer costs*
 
-**Example 4: Managed Cache Optimized**
+### Balanced Performance/Cost
 ```yaml
-latency_routing: true
-latency_weight: 70
 zone_aware: true
-cache_mode: true
-dns_resolve_interval: 15    # Frequent updates for scaling
+zone_weight: 70    # 70% same-AZ, 30% distributed
 ```
-*Result: 70% → fastest server, 30% distributed, with managed cache optimizations*
+*Good balance of cost savings and load distribution*
 
-**Example 5: Cost-Optimized (Minimize Cross-Zone Transfer)**
+### High Availability Focus
 ```yaml
-latency_routing: true
-latency_weight: 40     # More distributed traffic
 zone_aware: true
-zone_weight: 60        # Strong same-zone preference
+zone_weight: 40    # 40% same-AZ, 60% distributed
 ```
-*Result: Strongly favors same-zone to reduce data transfer costs*
+*Ensures good cross-AZ utilization*
 
 ---
 
-## How It Works
+## How Zone Detection Works
 
-### Core Engine
-1. **DNS Discovery**: Automatically resolves hostnames with `-ro` suffix to discover read replicas
-2. **Latency Measurement**: Measures connection latency during normal operations  
-3. **Health Monitoring**: Tracks failures per server and excludes unhealthy ones
-4. **Smart Routing**: Routes traffic based on configured weight distribution
-5. **Automatic Updates**: Re-resolves DNS periodically to discover topology changes
+1. **Automatic Discovery**: Resolves DNS to discover all server IPs
+2. **Latency Measurement**: Measures actual connection latency to each server
+3. **Statistical Analysis**: Groups servers using latency outlier detection
+   - Servers with latency ≤ (min + 25% of range) = "same zone"
+   - Other servers = "cross zone"
+4. **Intelligent Routing**: Routes configured percentage to same-zone servers
+5. **Continuous Monitoring**: Re-analyzes zones every 2 minutes
 
-### Cloud Zone Intelligence
-6. **Zone Detection**: Analyzes latency patterns to automatically detect zones (no metadata required)
-7. **Zone Clustering**: Groups servers with similar latency into the same zone
-8. **Cost Optimization**: Calculates route costs considering same-zone vs cross-zone data transfer
-9. **Cache Integration**: Recognizes managed cache endpoints and optimizes DNS resolution intervals
-10. **Health Scoring**: Advanced health checks considering latency thresholds and failure patterns
-
-### Server Selection Logic
-- Servers with >3 recent failures are excluded from routing
-- **`latency_weight%`** of traffic goes to the **lowest latency server**
-- **Remaining `(100-latency_weight)%`** is **equally distributed** among **all other healthy servers**
-- When new servers are discovered via DNS, they automatically join the routing pool
-- Seamless failover when servers become unavailable
+### No Manual Configuration Needed!
+- No need to specify zone IDs or latency thresholds
+- Automatically adapts to your infrastructure
+- Works with AWS, GCP, Azure, and any cloud provider
 
 ---
 
@@ -335,17 +235,43 @@ curl http://localhost:22222
 ```
 
 ### Logging
-Enable detailed logging to monitor latency-based routing:
+Enable detailed logging to monitor zone-aware routing:
 ```bash
 nutcracker -c nutcracker.yml -v 6 -o /var/log/nutcracker.log
 ```
 
 Look for log entries like:
 ```
-[timestamp] selected best address 0 for 'server' (latency: 15000us, failures: 0, weight: 80%)
-[timestamp] resolved 'redis-cluster-ro.amazonaws.com' to 3 addresses  
-[timestamp] weighted routing: selected second-best address 1 for 'server' (latency: 18000us)
+[timestamp] 🌍 auto-detected 2 zones for server 'redis-ro.example.com' (low-latency threshold: 15000us)
+[timestamp] → selected SAME-ZONE address 0 for 'redis-ro.example.com' (latency: 12000us, zone: 1)
+[timestamp] → selected DISTRIBUTED address 2 for 'redis-ro.example.com' (latency: 45000us, zone: 2)
 ```
+
+### Zone Statistics
+Monitor zone routing effectiveness:
+- `same_zone_selections` - Times same-zone server was selected
+- `cross_zone_selections` - Times cross-zone server was selected  
+- `zones_detected` - Number of zones detected
+- `current_latency_us` - Current connection latency
+
+---
+
+## Use Cases
+
+### AWS ElastiCache
+- **Primary use case**: Route traffic to read replicas in same AZ
+- **Cost savings**: Eliminate cross-AZ data transfer charges
+- **Performance**: Reduce latency with same-AZ routing
+
+### Multi-Region Caching
+- **Global distribution**: Intelligent routing across regions
+- **Automatic failover**: Cross-region backup when local region fails
+- **Cost optimization**: Prefer local region, fallback to others
+
+### Container Orchestration
+- **Kubernetes**: Automatic zone detection within clusters
+- **Docker Swarm**: Cross-node intelligent routing
+- **Auto-scaling**: Adapts as cache nodes are added/removed
 
 ---
 
