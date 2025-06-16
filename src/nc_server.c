@@ -1835,9 +1835,9 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
                                           (now - dns->last_seen[i]) / 1000000 : -1;
         
         /* Get hostname for this address */
-        const char *hostname_str = "unknown";
+        const char *cname_str = "unknown";
         if (dns->hostnames != NULL && i < dns->naddresses && dns->hostnames[i].data != NULL) {
-            hostname_str = (const char *)dns->hostnames[i].data;
+            cname_str = (const char *)dns->hostnames[i].data;
         } else {
             log_warn("hostname missing for addr %"PRIu32": hostnames=%p, i=%"PRIu32", naddresses=%"PRIu32, 
                      i, dns->hostnames, i, dns->naddresses);
@@ -1847,7 +1847,7 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "      {\n"
             "        \"index\": %"PRIu32",\n"
             "        \"ip\": \"%s\",\n"
-            "        \"hostname\": \"%s\",\n"
+            "        \"cname\": \"%s\",\n"
             "        \"latency_us\": %"PRIu32",\n"
             "        \"failures\": %"PRIu32",\n"
             "        \"zone_id\": %"PRIu32",\n"
@@ -1857,7 +1857,7 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "        \"current\": %s,\n"
             "        \"seconds_since_last_seen\": %"PRId64"\n"
             "      }%s\n",
-            i, addr_str, hostname_str, dns->latencies[i], dns->failure_counts[i],
+            i, addr_str, cname_str, dns->latencies[i], dns->failure_counts[i],
             zone_id, zone_type, zone_weight, 
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",

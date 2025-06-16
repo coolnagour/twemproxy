@@ -19,7 +19,7 @@ services:
       DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for 5 minutes after not seen in DNS
       DNS_HEALTH_CHECK_INTERVAL: "30"     # Health check every 30 seconds
     volumes:
-      - ./logs:/var/log/twemproxy
+      - ./logs:/var/log/twemproxy # you will need to logrotate this
     networks:
       - redis-network
     restart: unless-stopped
