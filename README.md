@@ -49,6 +49,7 @@ pools:
         zone_aware: true
         zone_weight: 99             # 99% preference for same-AZ servers
         dns_resolve_interval: 30    # Re-check DNS every 30 seconds
+        dns_expiration_minutes: 5   # Expire addresses after 5 minutes of not appearing in DNS (AWS DNS lookups to the readonly endpoint gives different responses, rotating each node on each response)
 
         servers:
             - my-redis-ro.cache.amazonaws.com:6379:1
@@ -234,6 +235,16 @@ Access runtime statistics on port 22222 (default):
 curl http://localhost:22222
 ```
 
+To view DNS host details for a specific server:
+```bash
+curl -s http://localhost:22222 | jq .[0].pools.redis_read.servers[].dns_hosts
+```
+
+To monitor all resolved IPs and their health:
+```bash
+curl -s http://localhost:22222 | jq .[0].pools.redis_read.servers[].dns_hosts.address_details
+```
+
 ### Logging
 Enable detailed logging to monitor zone-aware routing:
 ```bash
@@ -247,12 +258,87 @@ Look for log entries like:
 [timestamp] → selected DISTRIBUTED address 2 for 'redis-ro.example.com' (latency: 45000us, zone: 2)
 ```
 
-### Zone Statistics
-Monitor zone routing effectiveness:
+### DNS and Zone Statistics
+
+Monitor zone routing effectiveness and DNS resolution:
+- `dns_addresses` - Number of resolved IP addresses
+- `dns_resolves` - Total DNS resolution attempts
+- `dns_failures` - Failed DNS resolution attempts
+- `last_dns_resolved_at` - Timestamp of last DNS resolution
 - `same_zone_selections` - Times same-zone server was selected
 - `cross_zone_selections` - Times cross-zone server was selected  
 - `zones_detected` - Number of zones detected
 - `current_latency_us` - Current connection latency
+
+### Detailed DNS Host Information
+
+Each server now includes a `dns_hosts` field with comprehensive details:
+
+```json
+{
+  "dns_hosts": {
+    "type": "dynamic",
+    "hostname": "staging-api-ro.cache.amazonaws.com",
+    "dns_resolve_interval": 30,
+    "last_resolved": 1750079179689290,
+    "addresses": 4,
+    "current_address": 0,
+    "zone_aware": true,
+    "zone_weight_percent": 95,
+    "zones_detected": 2,
+    "same_zone_servers": 1,
+    "cross_zone_servers": 3,
+    "address_details": [
+      {
+        "index": 0,
+        "ip": "10.1.2.3",
+        "latency_us": 12000,
+        "failures": 0,
+        "zone_id": 1,
+        "zone_type": "same-az",
+        "zone_weight": 95,
+        "healthy": true,
+        "current": true
+      },
+      {
+        "index": 1,
+        "ip": "10.1.3.4", 
+        "latency_us": 45000,
+        "failures": 0,
+        "zone_id": 2,
+        "zone_type": "cross-az",
+        "zone_weight": 5,
+        "healthy": true,
+        "current": false
+      }
+    ]
+  }
+}
+```
+
+**DNS Host Fields Explained**:
+- `type` - "dynamic" for DNS-resolved servers, "static" for fixed IPs
+- `hostname` - The DNS name being resolved
+- `dns_resolve_interval` - How often DNS is re-resolved (seconds)
+- `last_resolved` - Unix timestamp of last DNS resolution
+- `addresses` - Total number of resolved IP addresses
+- `current_address` - Index of currently selected IP address
+- `zone_aware` - Whether zone-aware routing is enabled
+- `zone_weight_percent` - Percentage preference for same-zone servers
+- `zones_detected` - Number of latency-based zones identified
+- `same_zone_servers` - Count of servers in the local zone
+- `cross_zone_servers` - Count of servers in remote zones
+
+**Per-Address Details**:
+- `index` - Array index of this IP address
+- `ip` - The resolved IP address
+- `latency_us` - Current measured latency in microseconds
+- `failures` - Number of recent connection failures
+- `zone_id` - Automatically assigned zone identifier
+- `zone_type` - "same-az" or "cross-az" classification
+- `zone_weight` - Routing weight percentage for this address
+- `healthy` - Whether this address is considered healthy
+- `current` - Whether this is the currently selected address
 
 ---
 

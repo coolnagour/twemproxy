@@ -161,6 +161,10 @@ static struct command conf_pool_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, dns_cache_negative_ttl) },
 
+    { string("dns_expiration_minutes"),
+      conf_set_num,
+      offsetof(struct conf_pool, dns_expiration_minutes) },
+
     null_command
 };
 
@@ -335,6 +339,7 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->tls_verify_peer = CONF_UNSET_NUM;
     cp->dns_failure_threshold = CONF_UNSET_NUM;
     cp->dns_cache_negative_ttl = CONF_UNSET_NUM;
+    cp->dns_expiration_minutes = CONF_UNSET_NUM;
 
     array_null(&cp->server);
 
@@ -455,6 +460,7 @@ conf_pool_each_transform(void *elem, void *data)
     sp->tls_verify_peer = cp->tls_verify_peer ? 1 : 0;
     sp->dns_failure_threshold = (uint32_t)cp->dns_failure_threshold;
     sp->dns_cache_negative_ttl = (int64_t)cp->dns_cache_negative_ttl * 1000000LL; /* convert to microseconds */
+    sp->dns_expiration_minutes = (int64_t)cp->dns_expiration_minutes * 60000000LL; /* convert to microseconds */
 
     status = server_init(&sp->server, &cp->server, sp);
     if (status != NC_OK) {
@@ -1646,6 +1652,10 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
 
     if (cp->dns_cache_negative_ttl == CONF_UNSET_NUM) {
         cp->dns_cache_negative_ttl = CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL;
+    }
+
+    if (cp->dns_expiration_minutes == CONF_UNSET_NUM) {
+        cp->dns_expiration_minutes = CONF_DEFAULT_DNS_EXPIRATION_MINUTES;
     }
 
     if (!cp->redis && cp->redis_auth.len > 0) {

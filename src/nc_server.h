@@ -76,6 +76,7 @@ struct server_dns {
     uint32_t           *latencies;        /* Latency for each address (usec) */
     int64_t            *last_latency_check; /* Last latency measurement */
     uint32_t           *failure_counts;   /* Failure count per address */
+    int64_t            *last_seen;         /* Last time each address was returned by DNS */
     
     /* Enhanced health monitoring */
     uint32_t           *health_scores;    /* Rolling health score per address (0-100) */
@@ -168,6 +169,7 @@ struct server_pool {
     /* Enhanced DNS settings */
     uint32_t           dns_failure_threshold; /* failures before marking server unhealthy */
     int64_t            dns_cache_negative_ttl; /* negative DNS cache TTL (usec) */
+    int64_t            dns_expiration_minutes; /* expire addresses after N minutes (usec) */
 };
 
 void server_ref(struct conn *conn, void *owner);

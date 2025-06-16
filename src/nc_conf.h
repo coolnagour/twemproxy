@@ -73,6 +73,7 @@
 #define CONF_DEFAULT_TLS_VERIFY_PEER         true
 #define CONF_DEFAULT_DNS_FAILURE_THRESHOLD   3
 #define CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL  30         /* in seconds */
+#define CONF_DEFAULT_DNS_EXPIRATION_MINUTES  5          /* expire addresses after 5 minutes */
 
 struct conf_listen {
     struct string   pname;   /* listen: as "hostname:port" */
@@ -125,6 +126,7 @@ struct conf_pool {
     int                tls_verify_peer;       /* tls_verify_peer: verify TLS peer certificates */
     int                dns_failure_threshold; /* dns_failure_threshold: failures before unhealthy */
     int                dns_cache_negative_ttl; /* dns_cache_negative_ttl: negative DNS cache TTL */
+    int                dns_expiration_minutes; /* dns_expiration_minutes: expire addresses after N minutes */
     
     unsigned           valid:1;               /* valid? */
 };

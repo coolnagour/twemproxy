@@ -1083,6 +1083,7 @@ server_dns_init(struct server *server)
     dns->latencies = NULL;
     dns->last_latency_check = NULL;
     dns->failure_counts = NULL;
+    dns->last_seen = NULL;
     
     /* Enhanced health and zone initialization */
     dns->health_scores = NULL;
@@ -1155,6 +1156,10 @@ server_dns_deinit(struct server *server)
         nc_free(dns->failure_counts);
     }
     
+    if (dns->last_seen != NULL) {
+        nc_free(dns->last_seen);
+    }
+    
     /* Enhanced health and zone cleanup */
     if (dns->health_scores != NULL) {
         nc_free(dns->health_scores);
@@ -1180,38 +1185,29 @@ rstatus_t
 server_dns_resolve(struct server *server)
 {
     struct server_dns *dns;
+    struct server_pool *pool;
     rstatus_t status;
-    uint32_t i;
+    uint32_t i, j;
+    struct sockinfo *new_addresses = NULL;
+    uint32_t new_naddresses = 0;
+    int64_t now = nc_usec_now();
+    int64_t expiration_threshold;
     
     ASSERT(server != NULL && server->dns != NULL);
     
     dns = server->dns;
+    pool = server->owner;
     
-    /* Free existing data */
-    if (dns->addresses != NULL) {
-        nc_free(dns->addresses);
-        dns->addresses = NULL;
-    }
-    if (dns->latencies != NULL) {
-        nc_free(dns->latencies);
-        dns->latencies = NULL;
-    }
-    if (dns->last_latency_check != NULL) {
-        nc_free(dns->last_latency_check);
-        dns->last_latency_check = NULL;
-    }
-    if (dns->failure_counts != NULL) {
-        nc_free(dns->failure_counts);
-        dns->failure_counts = NULL;
-    }
+    /* Calculate expiration threshold */
+    expiration_threshold = pool ? pool->dns_expiration_minutes : (5 * 60000000LL); /* 5 minutes default */
     
-    /* Resolve all addresses */
+    /* Resolve new addresses from DNS */
     if (server->owner != NULL && server->owner->ctx != NULL) {
         stats_server_incr(server->owner->ctx, server, dns_resolves);
     }
     
-    status = nc_resolve_multi(&dns->hostname, server->port, &dns->addresses, 
-                              &dns->naddresses, dns->max_addresses);
+    status = nc_resolve_multi(&dns->hostname, server->port, &new_addresses, 
+                              &new_naddresses, dns->max_addresses);
     if (status != NC_OK) {
         if (server->owner != NULL && server->owner->ctx != NULL) {
             stats_server_incr(server->owner->ctx, server, dns_failures);
@@ -1221,52 +1217,160 @@ server_dns_resolve(struct server *server)
         return status;
     }
     
+    log_warn("DNS resolved '%.*s' to %"PRIu32" new addresses",
+              dns->hostname.len, dns->hostname.data, new_naddresses);
+    
+    /* If this is the first resolution, just use the new addresses */
+    if (dns->addresses == NULL || dns->naddresses == 0) {
+        dns->addresses = new_addresses;
+        dns->naddresses = new_naddresses;
+        
+        /* Allocate tracking arrays */
+        dns->latencies = nc_alloc(dns->naddresses * sizeof(uint32_t));
+        dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
+        dns->failure_counts = nc_alloc(dns->naddresses * sizeof(uint32_t));
+        dns->last_seen = nc_alloc(dns->naddresses * sizeof(int64_t));
+        
+        if (dns->latencies == NULL || dns->last_latency_check == NULL || 
+            dns->failure_counts == NULL || dns->last_seen == NULL) {
+            return NC_ENOMEM;
+        }
+        
+        /* Initialize data for all addresses */
+        for (i = 0; i < dns->naddresses; i++) {
+            dns->latencies[i] = DEFAULT_LATENCY_USEC;
+            dns->last_latency_check[i] = 0;
+            dns->failure_counts[i] = 0;
+            dns->last_seen[i] = now;
+        }
+        
+        dns->last_resolved = now;
+        log_warn("initialized with %"PRIu32" addresses for '%.*s'",
+                  dns->naddresses, dns->hostname.len, dns->hostname.data);
+        return NC_OK;
+    }
+    
+    /* Accumulative DNS resolution: merge new addresses with existing ones */
+    
+    /* First, mark existing addresses that are still in the new response */
+    for (i = 0; i < new_naddresses; i++) {
+        bool found = false;
+        for (j = 0; j < dns->naddresses; j++) {
+            if (memcmp(&dns->addresses[j].addr, &new_addresses[i].addr, 
+                      sizeof(dns->addresses[j].addr)) == 0) {
+                /* Address still exists, update last_seen */
+                dns->last_seen[j] = now;
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found) {
+            /* This is a new address, add it to our list */
+            /* Reallocate arrays to accommodate new address */
+            uint32_t new_size = dns->naddresses + 1;
+            
+            struct sockinfo *new_addr_array = nc_realloc(dns->addresses, new_size * sizeof(struct sockinfo));
+            uint32_t *new_latencies = nc_realloc(dns->latencies, new_size * sizeof(uint32_t));
+            int64_t *new_last_latency_check = nc_realloc(dns->last_latency_check, new_size * sizeof(int64_t));
+            uint32_t *new_failure_counts = nc_realloc(dns->failure_counts, new_size * sizeof(uint32_t));
+            int64_t *new_last_seen = nc_realloc(dns->last_seen, new_size * sizeof(int64_t));
+            
+            if (new_addr_array == NULL || new_latencies == NULL || 
+                new_last_latency_check == NULL || new_failure_counts == NULL ||
+                new_last_seen == NULL) {
+                log_error("failed to allocate memory for new DNS address");
+                if (new_addresses) nc_free(new_addresses);
+                return NC_ENOMEM;
+            }
+            
+            dns->addresses = new_addr_array;
+            dns->latencies = new_latencies;
+            dns->last_latency_check = new_last_latency_check;
+            dns->failure_counts = new_failure_counts;
+            dns->last_seen = new_last_seen;
+            
+            /* Add the new address */
+            memcpy(&dns->addresses[dns->naddresses], &new_addresses[i], sizeof(struct sockinfo));
+            dns->latencies[dns->naddresses] = DEFAULT_LATENCY_USEC;
+            dns->last_latency_check[dns->naddresses] = 0;
+            dns->failure_counts[dns->naddresses] = 0;
+            dns->last_seen[dns->naddresses] = now;
+            
+            dns->naddresses++;
+            
+            char addr_str[INET6_ADDRSTRLEN];
+            struct sockaddr *addr = (struct sockaddr *)&new_addresses[i].addr;
+            if (addr->sa_family == AF_INET) {
+                struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
+                inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
+            } else {
+                strcpy(addr_str, "unknown");
+            }
+            log_warn("added new address %s for '%.*s'", addr_str, dns->hostname.len, dns->hostname.data);
+        }
+    }
+    
+    /* Now expire old addresses that haven't been seen recently and have failed health checks */
+    uint32_t removed_count = 0;
+    for (i = 0; i < dns->naddresses; ) {
+        int64_t time_since_seen = now - dns->last_seen[i];
+        
+        /* Only expire if both conditions are met: */
+        /* 1. Address hasn't been seen in DNS for expiration_threshold time */
+        /* 2. Address has failed health checks (failure count > threshold) */
+        if (time_since_seen > expiration_threshold && 
+            dns->failure_counts[i] > (pool ? pool->dns_failure_threshold : 3)) {
+            
+            char addr_str[INET6_ADDRSTRLEN];
+            struct sockaddr *addr = (struct sockaddr *)&dns->addresses[i].addr;
+            if (addr->sa_family == AF_INET) {
+                struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
+                inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
+            } else {
+                strcpy(addr_str, "unknown");
+            }
+            
+            log_warn("expiring address %s for '%.*s' (not seen for %"PRId64"s, %"PRIu32" failures)",
+                     addr_str, dns->hostname.len, dns->hostname.data, 
+                     time_since_seen / 1000000, dns->failure_counts[i]);
+            
+            /* Remove this address by shifting everything down */
+            for (j = i; j < dns->naddresses - 1; j++) {
+                memcpy(&dns->addresses[j], &dns->addresses[j + 1], sizeof(struct sockinfo));
+                dns->latencies[j] = dns->latencies[j + 1];
+                dns->last_latency_check[j] = dns->last_latency_check[j + 1];
+                dns->failure_counts[j] = dns->failure_counts[j + 1];
+                dns->last_seen[j] = dns->last_seen[j + 1];
+            }
+            dns->naddresses--;
+            removed_count++;
+            /* Don't increment i since we shifted everything down */
+        } else {
+            i++;
+        }
+    }
+    
+    if (removed_count > 0) {
+        log_warn("expired %"PRIu32" addresses for '%.*s', %"PRIu32" addresses remaining",
+                 removed_count, dns->hostname.len, dns->hostname.data, dns->naddresses);
+    }
+    
+    /* Free the temporary new_addresses array */
+    if (new_addresses) {
+        nc_free(new_addresses);
+    }
+    
+    dns->last_resolved = now;
+    
     /* Update DNS stats */
     if (server->owner != NULL && server->owner->ctx != NULL) {
         stats_server_set_ts(server->owner->ctx, server, last_dns_resolved_at, dns->last_resolved);
         stats_server_set(server->owner->ctx, server, dns_addresses, dns->naddresses);
     }
     
-    /* Allocate latency and failure tracking arrays */
-    dns->latencies = nc_alloc(dns->naddresses * sizeof(uint32_t));
-    dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
-    dns->failure_counts = nc_alloc(dns->naddresses * sizeof(uint32_t));
-    
-    if (dns->latencies == NULL || dns->last_latency_check == NULL || 
-        dns->failure_counts == NULL) {
-        return NC_ENOMEM;
-    }
-    
-    /* Initialize latency data */
-    for (i = 0; i < dns->naddresses; i++) {
-        dns->latencies[i] = DEFAULT_LATENCY_USEC;
-        dns->last_latency_check[i] = 0;
-        dns->failure_counts[i] = 0;
-    }
-    
-    dns->last_resolved = nc_usec_now();
-    
-    log_warn("resolved '%.*s' to %"PRIu32" addresses",
+    log_warn("DNS resolution complete for '%.*s': %"PRIu32" total addresses",
               dns->hostname.len, dns->hostname.data, dns->naddresses);
-    
-    /* Log all discovered addresses with their initial latencies */
-    for (i = 0; i < dns->naddresses; i++) {
-        char addr_str[INET6_ADDRSTRLEN];
-        struct sockaddr *addr = (struct sockaddr *)&dns->addresses[i].addr;
-        
-        if (addr->sa_family == AF_INET) {
-            struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
-            inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
-        } else if (addr->sa_family == AF_INET6) {
-            struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)addr;
-            inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
-        } else {
-            strcpy(addr_str, "unknown");
-        }
-        
-        log_debug(LOG_INFO, "  address[%"PRIu32"]: %s (latency: %"PRIu32"us, failures: %"PRIu32")",
-                  i, addr_str, dns->latencies[i], dns->failure_counts[i]);
-    }
     
     return NC_OK;
 }
