@@ -446,6 +446,9 @@ core_loop(struct context *ctx)
     }
 
     core_timeout(ctx);
+    
+    /* Periodic DNS maintenance for dynamic servers */
+    core_dns_maintenance(ctx);
 
     stats_swap(ctx->stats);
 
