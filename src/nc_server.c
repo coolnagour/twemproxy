@@ -2160,14 +2160,28 @@ server_is_healthy(struct server *server, uint32_t addr_idx)
     /* Perform health check if needed */
     server_health_check(server, addr_idx);
     
-    /* Consider healthy if health score > 30 and failures < limit */
-    bool is_healthy = (dns->health_scores != NULL && dns->health_scores[addr_idx] > 30) &&
-                     (dns->failure_counts[addr_idx] < dns->consecutive_failures_limit);
+    /* Check if address hasn't been seen in DNS recently */
+    int64_t now = nc_usec_now();
+    int64_t time_since_seen = (now > 0 && dns->last_seen[addr_idx] > 0) ? 
+                              (now - dns->last_seen[addr_idx]) : 0;
+    struct server_pool *pool = server->owner;
+    int64_t stale_threshold = pool ? pool->dns_expiration_minutes : (5 * 60000000LL); /* Use config or 5 minutes default */
     
-    log_debug(LOG_VVERB, "🏥 health status addr %"PRIu32": %s (score=%"PRIu32", failures=%"PRIu32")",
+    /* Consider healthy if health score > 30, failures < limit, and recently seen in DNS */
+    bool is_healthy = (dns->health_scores != NULL && dns->health_scores[addr_idx] > 30) &&
+                     (dns->failure_counts[addr_idx] < dns->consecutive_failures_limit) &&
+                     (time_since_seen < stale_threshold);
+    
+    if (time_since_seen >= stale_threshold) {
+        log_debug(LOG_INFO, "🕐 marking addr %"PRIu32" as unhealthy: not seen in DNS for %"PRId64" seconds",
+                  addr_idx, time_since_seen / 1000000);
+    }
+    
+    log_debug(LOG_VVERB, "🏥 health status addr %"PRIu32": %s (score=%"PRIu32", failures=%"PRIu32", last_seen=%"PRId64"s ago)",
               addr_idx, is_healthy ? "healthy" : "unhealthy",
               dns->health_scores ? dns->health_scores[addr_idx] : 0,
-              dns->failure_counts[addr_idx]);
+              dns->failure_counts[addr_idx],
+              time_since_seen / 1000000);
     
     return is_healthy;
 }
