@@ -1107,6 +1107,23 @@ server_dns_init(struct server *server)
     log_debug(LOG_VERB, "initialized dynamic DNS for server '%.*s' (resolve_interval: %"PRId64"s)", 
               server->pname.len, server->pname.data, dns->resolve_interval / 1000000);
     
+    /* Perform initial DNS resolution */
+    log_debug(LOG_INFO, "🔍 performing initial DNS resolution for '%.*s'", 
+              server->pname.len, server->pname.data);
+    
+    status = server_dns_resolve(server);
+    if (status != NC_OK) {
+        log_warn("initial DNS resolution failed for server '%.*s', will retry later",
+                 server->pname.len, server->pname.data);
+        /* Don't fail initialization - we'll retry on first connection */
+    } else {
+        log_debug(LOG_INFO, "✅ initial DNS resolution successful for '%.*s' - found %"PRIu32" addresses", 
+                  server->pname.len, server->pname.data, dns->naddresses);
+        
+        /* Perform initial zone detection */
+        server_detect_zones_by_latency(server);
+    }
+    
     return NC_OK;
 }
 
@@ -1635,14 +1652,21 @@ server_detect_zones_by_latency(struct server *server)
     uint32_t healthy_count = 0;
     
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
+        log_debug(LOG_VVERB, "❌ Zone detection skipped: server=%p, is_dynamic=%d, dns=%p", 
+                  server, server ? server->is_dynamic : 0, server ? server->dns : NULL);
         return NC_ERROR;
     }
     
     dns = server->dns;
     now = nc_usec_now();
     
+    log_debug(LOG_INFO, "🌍 Zone detection called for '%.*s' with %"PRIu32" addresses", 
+              server->pname.len, server->pname.data, dns->naddresses);
+    
     /* Rate limit zone analysis - check every 2 minutes max */
     if ((now - dns->last_zone_analysis) < 120000000LL) {
+        log_debug(LOG_VVERB, "⏱️  Zone analysis rate limited (last: %"PRId64", now: %"PRId64")", 
+                  dns->last_zone_analysis, now);
         return NC_OK;
     }
     
