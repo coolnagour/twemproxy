@@ -1046,7 +1046,7 @@ server_pool_deinit(struct array *server_pool)
 #define DNS_RESOLVE_INTERVAL_USEC    (30 * 1000000)  /* 30 seconds */
 #define LATENCY_CHECK_INTERVAL_USEC  (5 * 1000000)   /* 5 seconds */
 #define MAX_ADDRESSES_PER_SERVER     16
-#define DEFAULT_LATENCY_USEC         (100 * 1000)    /* 100ms default */
+#define DEFAULT_LATENCY_USEC         100             /* 0.1ms default - very optimistic to prioritize new servers */
 
 rstatus_t
 server_dns_init(struct server *server)
@@ -1396,6 +1396,12 @@ server_dns_resolve(struct server *server)
             }
             log_warn("added new address %s for '%.*s' (total addresses: %"PRIu32")", 
                      addr_str, dns->hostname.len, dns->hostname.data, dns->naddresses);
+            
+            /* Force immediate zone re-analysis for new servers */
+            if (pool && pool->zone_aware) {
+                dns->last_zone_analysis = 0; /* Reset to force immediate re-analysis */
+                log_warn("🌍 forcing zone re-analysis for new server %s", addr_str);
+            }
         }
     }
     
@@ -1632,6 +1638,35 @@ server_select_best_address(struct server *server)
         
         log_debug(LOG_VERB, "🌍 zone routing for '%.*s': %"PRIu32" same-zone, %"PRIu32" other-zone servers (zone_weight: %"PRIu32"%%)", 
                   server->pname.len, server->pname.data, same_zone_count, other_zone_count, pool->zone_weight);
+        
+        /* Aggressive prioritization of untested servers */
+        uint32_t untested_server = UINT32_MAX;
+        for (i = 0; i < healthy_count; i++) {
+            uint32_t idx = healthy_servers[i];
+            /* If latency is still default (untested) */
+            if (dns->latencies[idx] == DEFAULT_LATENCY_USEC) {
+                int64_t now = nc_usec_now();
+                int64_t time_since_seen = (now > 0 && dns->last_seen[idx] > 0) ? 
+                                          (now - dns->last_seen[idx]) : 0;
+                /* Prioritize any untested server discovered recently (within 2 minutes) */
+                if (time_since_seen < 120000000LL) {
+                    untested_server = idx;
+                    log_warn("🚀 AGGRESSIVE: prioritizing untested server addr %"PRIu32" for '%.*s' (latency=%"PRIu32"μs, discovered %"PRId64"s ago)", 
+                             idx, server->pname.len, server->pname.data, 
+                             dns->latencies[idx], time_since_seen / 1000000);
+                    break;
+                }
+            }
+        }
+        
+        /* If we found an untested server, use it immediately to get real latency measurement */
+        if (untested_server != UINT32_MAX) {
+            stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[untested_server]);
+            nc_free(healthy_servers);
+            nc_free(same_zone_servers);
+            nc_free(other_zone_servers);
+            return untested_server;
+        }
         
         /* Apply zone-aware routing: zone_weight% preference for same-zone servers */
         rand_val = (uint32_t)rand() % 100;
