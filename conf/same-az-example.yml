@@ -36,8 +36,8 @@ pools:
         zone_aware: true
         zone_weight: 95             # 95% traffic to same-AZ, 5% distributed
         dns_resolve_interval: 30    # DNS refresh interval in seconds
-        dns_expiration_minutes: 5   # Expire addresses after 5 minutes of not appearing in DNS.
-        dns_health_check_interval: 30 # Health check interval in seconds
+        dns_expiration_minutes: 2   # Expire addresses after 5 minutes of not appearing in DNS.
+        dns_health_check_interval: 10 # Health check interval in seconds
 
         # Connection pooling for efficiency
         connection_pooling: true

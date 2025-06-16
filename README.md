@@ -750,8 +750,8 @@ If you are deploying twemproxy in production, you might consider reading through
 ## docker hub deployment
 ```
 docker build -t twemproxy-enhanced .
-docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:2.0.15
-docker push bobbymaher/twemproxy:2.0.15
+docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:2.0.16
+docker push bobbymaher/twemproxy:2.0.16
 docker push bobbymaher/twemproxy:latest
 ```
 

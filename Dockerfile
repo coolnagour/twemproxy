@@ -82,4 +82,4 @@ CMD ["/usr/local/sbin/nutcracker", \
      "--output=/var/log/twemproxy/nutcracker.log", \
      "--stats-port=22222", \
      "--stats-addr=0.0.0.0", \
-     "--stats-interval=30000"]
+     "--stats-interval=5000"]
