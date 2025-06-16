@@ -1350,16 +1350,26 @@ server_dns_resolve(struct server *server)
         }
     }
     
-    /* Now expire old addresses that haven't been seen recently and have failed health checks */
+    /* Now expire old addresses that haven't been seen recently */
     uint32_t removed_count = 0;
     for (i = 0; i < dns->naddresses; ) {
         int64_t time_since_seen = now - dns->last_seen[i];
+        bool should_expire = false;
         
-        /* Only expire if both conditions are met: */
-        /* 1. Address hasn't been seen in DNS for expiration_threshold time */
-        /* 2. Address has failed health checks (failure count > threshold) */
-        if (time_since_seen > expiration_threshold && 
-            dns->failure_counts[i] > (pool ? pool->dns_failure_threshold : 3)) {
+        /* Expire address if it hasn't been seen in DNS for expiration_threshold time */
+        /* For currently active address (current_addr_idx), also require failure threshold */
+        /* For inactive addresses, just time-based expiration is sufficient */
+        if (time_since_seen > expiration_threshold) {
+            if (i == server->current_addr_idx) {
+                /* Current address: require both time and failure thresholds */
+                should_expire = (dns->failure_counts[i] > (pool ? pool->dns_failure_threshold : 3));
+            } else {
+                /* Non-current address: time-based expiration only */
+                should_expire = true;
+            }
+        }
+        
+        if (should_expire) {
             
             char addr_str[INET6_ADDRSTRLEN];
             struct sockaddr *addr = (struct sockaddr *)&dns->addresses[i].addr;
@@ -1370,9 +1380,15 @@ server_dns_resolve(struct server *server)
                 strcpy(addr_str, "unknown");
             }
             
-            log_warn("expiring address %s for '%.*s' (not seen for %"PRId64"s, %"PRIu32" failures)",
-                     addr_str, dns->hostname.len, dns->hostname.data, 
-                     time_since_seen / 1000000, dns->failure_counts[i]);
+            if (i == server->current_addr_idx) {
+                log_warn("expiring current address %s for '%.*s' (not seen for %"PRId64"s, %"PRIu32" failures > threshold)",
+                         addr_str, dns->hostname.len, dns->hostname.data, 
+                         time_since_seen / 1000000, dns->failure_counts[i]);
+            } else {
+                log_warn("expiring inactive address %s for '%.*s' (not seen for %"PRId64"s)",
+                         addr_str, dns->hostname.len, dns->hostname.data, 
+                         time_since_seen / 1000000);
+            }
             
             /* Remove this address by shifting everything down */
             for (j = i; j < dns->naddresses - 1; j++) {
@@ -1751,6 +1767,11 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         const char* zone_type = (pool->zone_aware && dns->zone_ids != NULL && zone_id == dns->local_zone_id) ? "same-az" : "cross-az";
         bool is_healthy = server_is_healthy(server, i);
         
+        /* Calculate seconds since last seen in DNS */
+        int64_t now = nc_usec_now();
+        int64_t seconds_since_last_seen = (now > 0 && dns->last_seen[i] > 0) ? 
+                                          (now - dns->last_seen[i]) / 1000000 : -1;
+        
         addr_written = snprintf(buffer + written, buffer_size - written,
             "      {\n"
             "        \"index\": %"PRIu32",\n"
@@ -1761,12 +1782,14 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "        \"zone_type\": \"%s\",\n"
             "        \"zone_weight\": %"PRIu32",\n"
             "        \"healthy\": %s,\n"
-            "        \"current\": %s\n"
+            "        \"current\": %s,\n"
+            "        \"seconds_since_last_seen\": %"PRId64"\n"
             "      }%s\n",
             i, addr_str, dns->latencies[i], dns->failure_counts[i],
             zone_id, zone_type, zone_weight, 
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",
+            seconds_since_last_seen,
             (i < dns->naddresses - 1) ? "," : "");
         
         written += addr_written;
