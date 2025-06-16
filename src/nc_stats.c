@@ -1657,6 +1657,17 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         }
     }
     
+    /* Debug logging to see why we're getting null */
+    if (server == NULL) {
+        log_warn("stats: server not found for name '%.*s'", server_name->len, server_name->data);
+    } else if (!server->is_dynamic) {
+        log_warn("stats: server '%.*s' is not dynamic (is_dynamic=%d)", 
+                 server->pname.len, server->pname.data, server->is_dynamic);
+    } else if (server->dns == NULL) {
+        log_warn("stats: server '%.*s' has no DNS structure", 
+                 server->pname.len, server->pname.data);
+    }
+    
     /* If server not found or not dynamic, add empty object */
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
         struct stats_buffer *buf = &st->buf;
@@ -1668,6 +1679,9 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         }
         buf->len += (size_t)n;
         return NC_OK;
+    } else {
+        log_warn("stats: found dynamic server '%.*s' with DNS data, addresses=%d", 
+                 server->pname.len, server->pname.data, server->dns->naddresses);
     }
     
     /* Get DNS host information */
