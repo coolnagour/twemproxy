@@ -1655,8 +1655,13 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         for (j = 0; j < nserver; j++) {
             struct server *s = array_get(&pool->server, j);
             log_warn("stats: comparing with server pname '%.*s'", s->pname.len, s->pname.data);
-            if (string_compare(&s->pname, server_name) == 0) {
+            
+            /* Check if server_name matches the beginning of s->pname (ignoring weight suffix) */
+            if (server_name->len <= s->pname.len && 
+                nc_memcmp(server_name->data, s->pname.data, server_name->len) == 0 &&
+                (server_name->len == s->pname.len || s->pname.data[server_name->len] == ':')) {
                 server = s;
+                log_warn("stats: found matching server '%.*s'", s->pname.len, s->pname.data);
                 break;
             }
         }
