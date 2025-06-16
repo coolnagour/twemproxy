@@ -1644,38 +1644,21 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     server = NULL;
     npool = array_n(&st->owner->pool);
     
-    log_warn("stats: looking for server name '%.*s'", server_name->len, server_name->data);
-    
     for (i = 0; i < npool && server == NULL; i++) {
         struct server_pool *pool = array_get(&st->owner->pool, i);
         nserver = array_n(&pool->server);
         
-        log_warn("stats: checking pool %d with %d servers", i, nserver);
-        
         for (j = 0; j < nserver; j++) {
             struct server *s = array_get(&pool->server, j);
-            log_warn("stats: comparing with server pname '%.*s'", s->pname.len, s->pname.data);
             
             /* Check if server_name matches the beginning of s->pname (ignoring weight suffix) */
             if (server_name->len <= s->pname.len && 
                 memcmp(server_name->data, s->pname.data, server_name->len) == 0 &&
                 (server_name->len == s->pname.len || s->pname.data[server_name->len] == ':')) {
                 server = s;
-                log_warn("stats: found matching server '%.*s'", s->pname.len, s->pname.data);
                 break;
             }
         }
-    }
-    
-    /* Debug logging to see why we're getting null */
-    if (server == NULL) {
-        log_warn("stats: server not found for name '%.*s'", server_name->len, server_name->data);
-    } else if (!server->is_dynamic) {
-        log_warn("stats: server '%.*s' is not dynamic (is_dynamic=%d)", 
-                 server->pname.len, server->pname.data, server->is_dynamic);
-    } else if (server->dns == NULL) {
-        log_warn("stats: server '%.*s' has no DNS structure", 
-                 server->pname.len, server->pname.data);
     }
     
     /* If server not found or not dynamic, add empty object */
@@ -1689,9 +1672,6 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         }
         buf->len += (size_t)n;
         return NC_OK;
-    } else {
-        log_warn("stats: found dynamic server '%.*s' with DNS data, addresses=%d", 
-                 server->pname.len, server->pname.data, server->dns->naddresses);
     }
     
     /* Get DNS host information */
