@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # Redis servers for testing
+  redis-primary:
+    image: redis:7-alpine
+    container_name: redis-primary
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_primary_data:/data
+    networks:
+      - twemproxy_net
+
+  redis-replica-1:
+    image: redis:7-alpine
+    container_name: redis-replica-1
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes --replicaof redis-primary 6379
+    depends_on:
+      - redis-primary
+    volumes:
+      - redis_replica1_data:/data
+    networks:
+      - twemproxy_net
+
+  redis-replica-2:
+    image: redis:7-alpine
+    container_name: redis-replica-2
+    ports:
+      - "6381:6379"
+    command: redis-server --appendonly yes --replicaof redis-primary 6379
+    depends_on:
+      - redis-primary
+    volumes:
+      - redis_replica2_data:/data
+    networks:
+      - twemproxy_net
+
+  # Twemproxy with zone detection
+  twemproxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    container_name: twemproxy-enhanced
+    ports:
+      - "6378:6378"   # Read pool
+      - "6377:6379"   # Write pool
+      - "22222:22222" # Stats
+    depends_on:
+      - redis-primary
+      - redis-replica-1
+      - redis-replica-2
+    volumes:
+      - ./conf/cloud-redis.yml:/etc/twemproxy/nutcracker.yml:ro
+      - twemproxy_logs:/var/log/twemproxy
+    environment:
+      - TWEMPROXY_LOG_LEVEL=6
+    networks:
+      - twemproxy_net
+    restart: unless-stopped
+
+  # Redis CLI for testing
+  redis-cli:
+    image: redis:7-alpine
+    container_name: redis-test-client
+    depends_on:
+      - twemproxy
+    networks:
+      - twemproxy_net
+    command: tail -f /dev/null  # Keep container running
+    profiles:
+      - testing
+
+volumes:
+  redis_primary_data:
+  redis_replica1_data:
+  redis_replica2_data:
+  twemproxy_logs:
+
+networks:
+  twemproxy_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

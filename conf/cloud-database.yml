@@ -1,0 +1,98 @@
+# Cloud Database Optimized Configuration
+# This configuration demonstrates optimal settings for managed database clusters across cloud providers
+
+global:
+    worker_processes: auto
+    user: nobody
+    group: nobody
+
+pools:
+    # Database Read Pool with Multi-Zone Load Balancing
+    database_read:
+        listen: 127.0.0.1:3306
+        
+        # Core latency-based routing for database readers
+        latency_routing: true
+        latency_weight: 70                    # Prefer fastest reader, but use all
+        dns_resolve_interval: 30              # Database endpoints change less frequently
+        
+        # Cloud zone optimizations
+        zone_aware: true                      # Prefer same-zone readers (no cross-zone charges)
+        zone_weight: 25                       # +25% weight for same-zone readers
+        zone_latency_threshold: 30000         # 30ms threshold for database zones
+        
+        # Database-specific settings
+        cache_mode: false                     # This is a database, not cache
+        
+        # Enhanced health monitoring for databases
+        dns_failure_threshold: 2              # Database readers can be promoted/demoted
+        dns_cache_negative_ttl: 15            # Moderate retry for databases
+        
+        # Connection pooling for databases
+        connection_pooling: true
+        connection_warming: 2                 # Pre-warm connections to readers
+        connection_idle_timeout: 600          # Longer timeout for database connections
+        
+        # Database cluster reader endpoint (discovers all read replicas)
+        servers:
+            - database-cluster-ro.example.com:3306:1
+    
+    # Database Write Pool (primary endpoint only)
+    database_write:
+        listen: 127.0.0.1:3307
+        
+        # No load balancing for writes - single primary
+        latency_routing: false
+        
+        # Zone optimizations
+        zone_aware: true
+        connection_pooling: true
+        connection_warming: 3                 # More connections for write workload
+        connection_idle_timeout: 900          # Longer idle timeout for writes
+        
+        # Database cluster writer endpoint (primary only)
+        servers:
+            - database-cluster.example.com:3306:1
+
+    # Database with SSL/TLS encryption
+    database_secure:
+        listen: 127.0.0.1:3308
+        
+        # Secure database reads with load balancing
+        latency_routing: true
+        latency_weight: 60
+        zone_aware: true
+        zone_weight: 30
+        
+        # TLS for secure connections
+        tls_enabled: true
+        tls_verify_peer: true                 # Verify database certificates
+        
+        # Connection settings for secure connections
+        connection_pooling: true
+        connection_warming: 1                 # Fewer pre-warmed TLS connections
+        
+        servers:
+            - database-cluster-ro.example.com:3306:1
+
+    # Global Database (cross-region reads)
+    database_global_read:
+        listen: 127.0.0.1:3309
+        
+        # Global database optimization
+        latency_routing: true
+        latency_weight: 80                    # Strongly prefer lowest latency
+        dns_resolve_interval: 60              # Global endpoints change infrequently
+        
+        # Cross-region awareness
+        zone_aware: true
+        zone_weight: 50                       # High preference for same-region
+        zone_latency_threshold: 100000        # 100ms threshold for global zones
+        
+        # Longer timeouts for global connections
+        connection_pooling: true
+        connection_idle_timeout: 1200         # 20 minutes for global connections
+        
+        # Global cluster reader endpoint
+        servers:
+            - database-global-ro.example.com:3306:1

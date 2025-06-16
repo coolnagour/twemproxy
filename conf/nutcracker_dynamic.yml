@@ -1,0 +1,38 @@
+global:
+    worker_processes: auto
+    max_openfiles: 102400
+    user: nobody
+    group: nobody
+    worker_shutdown_timeout: 30
+
+pools:
+    read_pool:
+        listen: 127.0.0.1:6378
+        auto_eject_hosts: true
+        redis: true
+        timeout: 2000
+        server_retry_timeout: 10000
+        server_failure_limit: 1
+        server_connections: 1
+        
+        # Dynamic DNS and latency-based routing configuration
+        latency_routing: true           # Enable latency-based server selection
+        dns_resolve_interval: 30        # Re-resolve DNS every 30 seconds
+        latency_weight: 50              # 50% to fastest server, 50% distributed among all others
+        
+        servers:
+            - redis-cluster-ro.us-east-1.cache.amazonaws.com:6379:1 PrimaryReadEndpoint
+
+    write_pool:
+        listen: 127.0.0.1:6379
+        auto_eject_hosts: true
+        redis: true
+        timeout: 2000
+        server_retry_timeout: 1000
+        server_failure_limit: 5
+        server_connections: 1
+        
+        # No latency routing for write pool (default: false)
+        
+        servers:
+            - redis-cluster.us-east-1.cache.amazonaws.com:6379:1

@@ -78,6 +78,25 @@ stats_describe(void)
         log_stderr("  %-20s\"%s\"", stats_server_desc[i].name,
                    stats_server_desc[i].desc);
     }
+
+    log_stderr("");
+    log_stderr("enhanced dynamic DNS & latency features:");
+    log_stderr("  dns_addresses        \"# DNS resolved addresses for dynamic servers\"");
+    log_stderr("  dns_resolves         \"# DNS resolution attempts\"");
+    log_stderr("  dns_failures         \"# DNS resolution failures\"");
+    log_stderr("  latency_fastest_sel  \"# times fastest server was selected\"");
+    log_stderr("  latency_distributed_sel \"# times distributed server was selected\"");
+    log_stderr("  current_latency_us   \"current connection latency in microseconds\"");
+    log_stderr("  last_dns_resolved_at \"timestamp when DNS was last resolved in usec\"");
+    log_stderr("");
+    log_stderr("cloud multi-zone optimizations:");
+    log_stderr("  zones_detected       \"number of latency-based zones detected\"");
+    log_stderr("  same_zone_selections \"# times same-zone server was selected\"");
+    log_stderr("  cross_zone_selections \"# times cross-zone server was selected\"");
+    log_stderr("  cache_mode_active    \"managed cache service optimization status\"");
+    log_stderr("  connection_pool_hits \"# connection pool cache hits\"");
+    log_stderr("  connection_pool_miss \"# connection pool cache misses\"");
+    log_stderr("  health_score_avg     \"average health score across all servers\"");
 }
 
 static void
@@ -1530,4 +1549,63 @@ _stats_server_record_latency(struct context *ctx, struct server *server, int64_t
     for (ind = 0; latency > latency_buckets[ind]; ind++);
     counter = array_get(&sts->latency, ind);
     *counter += 1;
+}
+
+void
+stats_show_read_hosts(struct array *server_pool)
+{
+    uint32_t i, j, npool, nserver;
+    struct server_pool *sp;
+    struct server *server;
+    char buffer[4096];
+    rstatus_t status;
+
+    if (server_pool == NULL) {
+        log_stderr("read hosts: server_pool is NULL");
+        return;
+    }
+
+    npool = array_n(server_pool);
+    log_stderr("");
+    log_stderr("read hosts configuration:");
+
+    for (i = 0; i < npool; i++) {
+        sp = array_get(server_pool, i);
+        nserver = array_n(&sp->server);
+        
+        log_stderr("  pool '%.*s':", sp->name.len, sp->name.data);
+        log_stderr("    latency_routing: %s", sp->latency_routing ? "enabled" : "disabled");
+        if (sp->latency_routing) {
+            log_stderr("    latency_weight: %"PRIu32"%%", sp->latency_weight);
+            log_stderr("    dns_resolve_interval: %"PRId64" seconds", sp->dns_resolve_interval / 1000000);
+        }
+
+        for (j = 0; j < nserver; j++) {
+            server = array_get(&sp->server, j);
+            
+            if (server->is_dynamic && server->dns != NULL) {
+                status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+                if (status == NC_OK) {
+                    log_stderr("    server '%.*s':", server->pname.len, server->pname.data);
+                    log_stderr("      type: dynamic DNS");
+                    log_stderr("      hostname: %.*s", server->dns->hostname.len, server->dns->hostname.data);
+                    log_stderr("      resolved_addresses: %"PRIu32, server->dns->naddresses);
+                    log_stderr("      current_address_index: %"PRIu32, server->current_addr_idx);
+                    if (server->dns->naddresses > 0 && server->current_addr_idx < server->dns->naddresses) {
+                        log_stderr("      current_latency: %"PRIu32" microseconds", 
+                                   server->dns->latencies[server->current_addr_idx]);
+                        log_stderr("      current_failures: %"PRIu32, 
+                                   server->dns->failure_counts[server->current_addr_idx]);
+                    }
+                } else {
+                    log_stderr("    server '%.*s': failed to get read host info", 
+                               server->pname.len, server->pname.data);
+                }
+            } else {
+                log_stderr("    server '%.*s': static configuration", 
+                           server->pname.len, server->pname.data);
+            }
+        }
+        log_stderr("");
+    }
 }

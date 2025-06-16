@@ -649,6 +649,13 @@ main(int argc, char **argv)
 
         if (describe_stats) {
             stats_describe();
+            
+            /* Also show read host details if config is available */
+            struct conf *cf = conf_create(nci.conf_filename);
+            if (cf != NULL) {
+                stats_show_read_hosts(&cf->pool);
+                conf_destroy(cf);
+            }
         }
 
         exit(0);

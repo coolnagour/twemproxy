@@ -1,322 +1,353 @@
-# twemproxy (nutcracker) [![Build Status](https://secure.travis-ci.org/twitter/twemproxy.png)](http://travis-ci.org/twitter/twemproxy)
+# twemproxy (nutcracker) - Enhanced with Dynamic DNS & Latency-Based Routing
 
-twemproxy is a multi-process, fast and lightweight proxy for [memcached](http://www.memcached.org/) and [redis](http://redis.io/) protocol.
-It was built primarily to reduce the number of connections to the caching servers on the backend.
-This, together with protocol pipelining and sharding enables you to horizontally scale your distributed caching architecture.
+## 🚀 What's Different from Original Twemproxy?
 
-This is a fork of `twitter/twemproxy` to support *multi-process* and *hot-reload* features. All the developments happen
-on the `develop` branch, so we could use the master to track the upstream changes and backporting.
+This fork adds **dynamic DNS resolution** and **latency-based server selection** for Redis read replicas, eliminating the need for external scripts and config file reloading.
 
-The `develop` branch is quite stable, it's been used on the production servers at *Meitu Inc.* and reliably weathers the storm for over a year.
+### ✨ New Features:
+- **🎯 Latency-Based Routing**: Automatically routes traffic to the lowest latency Redis servers
+- **⚖️ Weighted Traffic Distribution**: Configure percentage split (e.g., 80% to fastest server, 20% to second-best)
+- **🔄 Dynamic DNS Resolution**: Automatically discovers new/removed Redis servers without restarts
+- **📊 Real-time Latency Measurement**: Measures actual connection latency during normal operations
+- **⚙️ Configurable per Pool**: Enable/disable features independently for read vs write pools
+- **🛡️ Automatic Failover**: Seamlessly handles server failures and DNS changes
 
-## Build
+### 🌍 Cloud Multi-Zone Optimizations:
+- **🏢 Zone Awareness**: Automatically detects zones based on latency patterns (reduces costs & latency)
+- **⚡ Managed Cache Integration**: Enhanced support for cloud cache service endpoints and scaling
+- **🔒 TLS Support**: Built-in support for TLS encryption and certificate verification
+- **🏥 Enhanced Health Checking**: Advanced health monitoring with failure threshold controls
+- **🔗 Connection Pooling**: Intelligent connection management with warming and idle timeout
+- **📈 Cost Optimization**: Minimizes cross-zone data transfer charges through smart routing
 
-To build twemproxy from [distribution tarball](https://drive.google.com/open?id=0B6pVMMV5F5dfMUdJV25abllhUWM&authuser=0):
+---
 
-    $ ./configure
-    $ make
-    $ sudo make install
+## Quick Start
 
-To build twemproxy from [distribution tarball](https://drive.google.com/open?id=0B6pVMMV5F5dfMUdJV25abllhUWM&authuser=0) in _debug mode_:
+### 1. Build from Source
+```bash
+git clone <this-repo>
+cd twemproxy
+autoreconf -fvi
+./configure
+make
+sudo make install
+```
 
-    $ CFLAGS="-ggdb3 -O0" ./configure --enable-debug=full
-    $ make
-    $ sudo make install
+### 2. Create Configuration
+Create `nutcracker.yml` with dynamic DNS support:
 
-To build twemproxy from source with _debug logs enabled_ and _assertions enabled_:
+```yaml
+global:
+    worker_processes: auto
+    user: nobody
+    group: nobody
 
-    $ git clone git@github.com:twitter/twemproxy.git
-    $ cd twemproxy
-    $ autoreconf -fvi
-    $ ./configure --enable-debug=full
-    $ make
-    $ src/nutcracker -h
+pools:
+    redis_read:
+        listen: 127.0.0.1:6378
+        redis: true
+        auto_eject_hosts: true
+        
+        # Dynamic DNS and latency-based routing
+        latency_routing: true           # Enable smart routing
+        dns_resolve_interval: 30        # Re-check DNS every 30 seconds  
+        latency_weight: 50              # 50% to fastest, 50% distributed among all others
+        
+        servers:
+            - redis-cluster-ro.us-east-1.cache.amazonaws.com:6379:1
 
-A quick checklist:
+    redis_write:
+        listen: 127.0.0.1:6379
+        redis: true
+        servers:
+            - redis-cluster.us-east-1.cache.amazonaws.com:6379:1
+```
 
-+ Use newer version of gcc (older version of gcc has problems)
-+ Use CFLAGS="-O1" ./configure && make
-+ Use CFLAGS="-O3 -fno-strict-aliasing" ./configure && make
-+ `autoreconf -fvi && ./configure` needs `automake` and `libtool` to be installed
+### 3. Run
+```bash
+nutcracker -c nutcracker.yml -v 6
+```
 
-## Features
+### 4. Test
+```bash
+# Read traffic (will route to lowest latency server)
+redis-cli -h 127.0.0.1 -p 6378 GET mykey
 
-* Supports master-worker's process mode(NEW)
-* Supports reload config in runtime(NEW)
-* Supports split read/write in redis master-slave(NEW)
+# Write traffic (normal routing)
+redis-cli -h 127.0.0.1 -p 6379 SET mykey value
+```
 
-+ Fast.
-+ Lightweight.
-+ Maintains persistent server connections.
-+ Keeps connection count on the backend caching servers low.
-+ Enables pipelining of requests and responses.
-+ Supports proxying to multiple servers.
-+ Supports multiple server pools simultaneously.
-+ Shard data automatically across multiple servers.
-+ Implements the complete [memcached ascii](notes/memcache.md) and [redis](notes/redis.md) protocol.
-+ Easy configuration of server pools through a YAML file.
-+ Supports multiple hashing modes including consistent hashing and distribution.
-+ Can be configured to disable nodes on failures.
-+ Observability via stats exposed on the stats monitoring port.
-+ Works with Linux, \*BSD, OS X and SmartOS (Solaris)
+---
 
-## Help
+## Cloud Configuration Examples
 
-    Usage: nutcracker [-?hVdDt] [-v verbosity level] [-o output file]
-                      [-c conf file] [-s stats port] [-a stats addr]
-                      [-i stats interval] [-p pid file] [-m mbuf size]
+### 🔥 Managed Redis Cluster
+```yaml
+pools:
+    redis_read:
+        listen: 127.0.0.1:6378
+        redis: true
+        
+        # Core latency routing
+        latency_routing: true
+        latency_weight: 60                    # 60% to fastest, 40% distributed
+        dns_resolve_interval: 15              # Managed caches scale frequently
+        
+        # Cloud zone optimizations
+        zone_aware: true                      # Enable zone-aware routing
+        zone_weight: 30                       # +30% weight for same-zone servers
+        zone_latency_threshold: 50000         # 50ms threshold for zone detection
+        cache_mode: true                      # Managed cache optimizations
+        
+        # Connection pooling
+        connection_pooling: true
+        connection_warming: 1                 # Pre-warm connections
+        connection_idle_timeout: 300
+        
+        # Enhanced health monitoring
+        dns_failure_threshold: 2              # Faster failover
+        
+        servers:
+            - redis-cluster-ro.cache.example.com:6379:1
+```
 
-    Options:
-      -h, --help             : this help
-      -V, --version          : show version and exit
-      -t, --test-conf        : test configuration for syntax errors and exit
-      -d, --daemonize        : run as a daemon
-      -D, --describe-stats   : print stats description and exit
-      -v, --verbose=N        : set logging level (default: 5, min: 0, max: 11)
-      -o, --output=S         : set logging file (default: stderr)
-      -c, --conf-file=S      : set configuration file (default: conf/nutcracker.yml)
-      -s, --stats-port=N     : set stats monitoring port (default: 22222)
-      -a, --stats-addr=S     : set stats monitoring ip (default: 0.0.0.0)
-      -i, --stats-interval=N : set stats aggregation interval in msec (default: 30000 msec)
-      -p, --pid-file=S       : set pid file (default: off)
-      -m, --mbuf-size=N      : set size of mbuf chunk in bytes (default: 16384 bytes)
+### 🗄️ Managed Database Cluster
+```yaml
+pools:
+    database_read:
+        listen: 127.0.0.1:3306
+        
+        # Database-optimized settings
+        latency_routing: true
+        latency_weight: 70                    # Prefer fastest reader
+        dns_resolve_interval: 30              # Managed databases change less frequently
+        
+        # Zone optimization (reduces cross-zone charges)
+        zone_aware: true
+        zone_weight: 25                       # Same-zone preference
+        zone_latency_threshold: 30000         # 30ms threshold for DB zones
+        
+        # Database connection settings
+        connection_pooling: true
+        connection_warming: 2
+        connection_idle_timeout: 600          # Longer for DB connections
+        
+        servers:
+            - database-cluster-ro.example.com:3306:1
+```
 
-## Zero Copy
+### 🔒 Secure Managed Cache with TLS
+```yaml
+pools:
+    secure_redis:
+        listen: 127.0.0.1:6380
+        redis: true
+        
+        latency_routing: true
+        zone_aware: true
+        cache_mode: true
+        
+        # TLS configuration
+        tls_enabled: true                     # Enable encryption in transit
+        tls_verify_peer: true                 # Verify certificates
+        
+        servers:
+            - secure-cache-ro.example.com:6380:1
+```
 
-In twemproxy, all the memory for incoming requests and outgoing responses is allocated in mbuf. Mbuf enables zero-copy because the same buffer on which a request was received from the client is used for forwarding it to the server. Similarly the same mbuf on which a response was received from the server is used for forwarding it to the client.
+See `conf/cloud-*.yml` for complete examples.
 
-Furthermore, memory for mbufs is managed using a reuse pool. This means that once mbuf is allocated, it is not deallocated, but just put back into the reuse pool. By default each mbuf chunk is set to 16K bytes in size. There is a trade-off between the mbuf size and number of concurrent connections twemproxy can support. A large mbuf size reduces the number of read syscalls made by twemproxy when reading requests or responses. However, with a large mbuf size, every active connection would use up 16K bytes of buffer which might be an issue when twemproxy is handling large number of concurrent connections from clients. When twemproxy is meant to handle a large number of concurrent client connections, you should set chunk size to a small value like 512 bytes using the -m or --mbuf-size=N argument.
+---
 
-## Configuration
+## Configuration Options
 
-Twemproxy can be configured through a YAML file specified by the -c or --conf-file command-line argument on process start. The configuration file is used to specify the server pools and the servers within each pool that twemproxy manages. The configuration files parses and understands the following keys:
+### Core Latency-Based Routing
 
-+ **listen**: The listening address and port (name:port or ip:port) or an absolute path to sock file (e.g. /var/run/nutcracker.sock) for this server pool.
-+ **client_connections**: The maximum number of connections allowed from redis clients. Unlimited by default, though OS-imposed limitations will still apply.
-+ **hash**: The name of the hash function. Possible values are:
- + one_at_a_time
- + md5
- + crc16
- + crc32 (crc32 implementation compatible with [libmemcached](http://libmemcached.org/))
- + crc32a (correct crc32 implementation as per the spec)
- + fnv1_64
- + fnv1a_64
- + fnv1_32
- + fnv1a_32
- + hsieh
- + murmur
- + jenkins
-+ **hash_tag**: A two character string that specifies the part of the key used for hashing. Eg "{}" or "$$". [Hash tag](notes/recommendation.md#hash-tags) enable mapping different keys to the same server as long as the part of the key within the tag is the same.
-+ **distribution**: The key distribution mode. Possible values are:
- + ketama
- + modula
- + random
-+ **timeout**: The timeout value in msec that we wait for to establish a connection to the server or receive a response from a server. By default, we wait indefinitely.
-+ **backlog**: The TCP backlog argument. Defaults to 512.
-+ **preconnect**: A boolean value that controls if twemproxy should preconnect to all the servers in this pool on process start. Defaults to false.
-+ **redis**: A boolean value that controls if a server pool speaks redis or memcached protocol. Defaults to false.
-+ **redis_auth**: Authenticate to the Redis server on connect.
-+ **redis_db**: The DB number to use on the pool servers. Defaults to 0. Note: Twemproxy will always present itself to clients as DB 0.
-+ **server_connections**: The maximum number of connections that can be opened to each server. By default, we open at most 1 server connection.
-+ **auto_eject_hosts**: A boolean value that controls if server should be ejected temporarily when it fails consecutively server_failure_limit times. See [liveness recommendations](notes/recommendation.md#liveness) for information. Defaults to false.
-+ **server_retry_timeout**: The timeout value in msec to wait for before retrying on a temporarily ejected server, when auto_eject_host is set to true. Defaults to 30000 msec.
-+ **server_failure_limit**: The number of consecutive failures on a server that would lead to it being temporarily ejected when auto_eject_host is set to true. Defaults to 2.
-+ **servers**: A list of server address, port and weight (name:port:weight or ip:port:weight) for this server pool.
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `latency_routing` | boolean | `false` | Enable latency-based server selection |
+| `dns_resolve_interval` | integer | `30` | DNS re-resolution interval (seconds) |
+| `latency_weight` | integer | `80` | Percentage of traffic to lowest latency server (0-100) |
 
+### Cloud Multi-Zone Optimizations
 
-For example, the configuration file in [conf/nutcracker.yml](conf/nutcracker.yml), also shown below, configures 5 server pools with names - _alpha_, _beta_, _gamma_, _delta_ and omega. Clients that intend to send requests to one of the 10 servers in pool delta connect to port 22124 on 127.0.0.1. Clients that intend to send request to one of 2 servers in pool omega connect to unix path /tmp/gamma. Requests sent to pool alpha and omega have no timeout and might require timeout functionality to be implemented on the client side. On the other hand, requests sent to pool beta, gamma and delta timeout after 400 msec, 400 msec and 100 msec respectively when no response is received from the server. Of the 5 server pools, only pools alpha, gamma and delta are configured to use server ejection and hence are resilient to server failures. All the 5 server pools use ketama consistent hashing for key distribution with the key hasher for pools alpha, beta, gamma and delta set to fnv1a_64 while that for pool omega set to hsieh. Also only pool beta uses [nodes names](notes/recommendation.md#node-names-for-consistent-hashing) for consistent hashing, while pool alpha, gamma, delta and omega use 'host:port:weight' for consistent hashing. Finally, only pool alpha and beta can speak the redis protocol, while pool gamma, delta and omega speak memcached protocol.
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `zone_aware` | boolean | `false` | Enable zone aware routing (latency-based) |
+| `zone_weight` | integer | `25` | Extra weight bonus for same-zone servers (0-100) |
+| `zone_latency_threshold` | integer | `50000` | Latency threshold for zone detection (microseconds) |
+| `cache_mode` | boolean | `false` | Enable managed cache service optimizations |
 
-    alpha:
-      listen: 127.0.0.1:22121
-      hash: fnv1a_64
-      distribution: ketama
-      auto_eject_hosts: true
-      redis: true
-      server_retry_timeout: 2000
-      server_failure_limit: 1
-      servers:
-       - 127.0.0.1:6379:1
+### Connection Management
 
-    beta:
-      listen: 127.0.0.1:22122
-      hash: fnv1a_64
-      hash_tag: "{}"
-      distribution: ketama
-      auto_eject_hosts: false
-      timeout: 400
-      redis: true
-      servers:
-       - 127.0.0.1:6380:1 server1
-       - 127.0.0.1:6381:1 server2
-       - 127.0.0.1:6382:1 server3
-       - 127.0.0.1:6383:1 server4
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `connection_pooling` | boolean | `false` | Enable connection pooling |
+| `connection_warming` | integer | `0` | Number of connections to pre-warm |
+| `connection_idle_timeout` | integer | `300` | Close idle connections after N seconds |
 
-    gamma:
-      listen: 127.0.0.1:22123
-      hash: fnv1a_64
-      distribution: ketama
-      timeout: 400
-      backlog: 1024
-      preconnect: true
-      auto_eject_hosts: true
-      server_retry_timeout: 2000
-      server_failure_limit: 3
-      servers:
-       - 127.0.0.1:11212:1
-       - 127.0.0.1:11213:1
+### Enhanced Health Monitoring
 
-    delta:
-      listen: 127.0.0.1:22124
-      hash: fnv1a_64
-      distribution: ketama
-      timeout: 100
-      auto_eject_hosts: true
-      server_retry_timeout: 2000
-      server_failure_limit: 1
-      servers:
-       - 127.0.0.1:11214:1
-       - 127.0.0.1:11215:1
-       - 127.0.0.1:11216:1
-       - 127.0.0.1:11217:1
-       - 127.0.0.1:11218:1
-       - 127.0.0.1:11219:1
-       - 127.0.0.1:11220:1
-       - 127.0.0.1:11221:1
-       - 127.0.0.1:11222:1
-       - 127.0.0.1:11223:1
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `dns_failure_threshold` | integer | `3` | Failures before marking server unhealthy |
+| `dns_cache_negative_ttl` | integer | `30` | Negative DNS cache TTL (seconds) |
 
-    omega:
-      listen: /tmp/gamma 0666
-      hash: hsieh
-      distribution: ketama
-      auto_eject_hosts: false
-      servers:
-       - 127.0.0.1:11214:100000
-       - 127.0.0.1:11215:1
+### Security & Encryption
 
-Finally, to make writing a syntactically correct configuration file easier, twemproxy provides a command-line argument -t or --test-conf that can be used to test the YAML configuration file for any syntax error.
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tls_enabled` | boolean | `false` | Enable TLS encryption |
+| `tls_verify_peer` | boolean | `true` | Verify TLS peer certificates |
 
-## Observability
+### Traffic Distribution Examples
 
-Observability in twemproxy is through logs and stats.
+**Example 1: Pure Latency-Based (100% to fastest)**
+```yaml
+latency_routing: true
+latency_weight: 100    # All traffic to fastest server
+```
+*With 6 servers: 100% → Server A (fastest), 0% → all others*
 
-Twemproxy exposes stats at the granularity of server pool and servers per pool through the stats monitoring port. The stats are essentially JSON formatted key-value pairs, with the keys corresponding to counter names. By default stats are exposed on port 22222 and aggregated every 30 seconds. Both these values can be configured on program start using the -c or --conf-file and -i or --stats-interval command-line arguments respectively. You can print the description of all stats exported by  using the -D or --describe-stats command-line argument.
+**Example 2: Balanced Load Distribution (50/50 split)**
+```yaml
+latency_routing: true  
+latency_weight: 50     # 50% to fastest, 50% split among all others
+```
+*With 6 servers: 50% → Server A (fastest), 10% each → Servers B,C,D,E,F*
 
-    $ nutcracker --describe-stats
+**Example 3: Zone-Aware Distribution**
+```yaml
+latency_routing: true
+latency_weight: 60
+zone_aware: true
+zone_weight: 30              # Same-zone servers get +30% weight bonus
+zone_latency_threshold: 50000 # 50ms threshold for zone detection
+```
+*Result: Same-zone servers are preferred, but all healthy servers are used*
 
-    pool stats:
-      client_eof          "# eof on client connections"
-      client_err          "# errors on client connections"
-      client_connections  "# active client connections"
-      server_ejects       "# times backend server was ejected"
-      forward_error       "# times we encountered a forwarding error"
-      fragments           "# fragments created from a multi-vector request"
+**Example 4: Managed Cache Optimized**
+```yaml
+latency_routing: true
+latency_weight: 70
+zone_aware: true
+cache_mode: true
+dns_resolve_interval: 15    # Frequent updates for scaling
+```
+*Result: 70% → fastest server, 30% distributed, with managed cache optimizations*
 
-    server stats:
-      server_eof          "# eof on server connections"
-      server_err          "# errors on server connections"
-      server_timedout     "# timeouts on server connections"
-      server_connections  "# active server connections"
-      requests            "# requests"
-      request_bytes       "total request bytes"
-      responses           "# responses"
-      response_bytes      "total response bytes"
-      in_queue            "# requests in incoming queue"
-      in_queue_bytes      "current request bytes in incoming queue"
-      out_queue           "# requests in outgoing queue"
-      out_queue_bytes     "current request bytes in outgoing queue"
+**Example 5: Cost-Optimized (Minimize Cross-Zone Transfer)**
+```yaml
+latency_routing: true
+latency_weight: 40     # More distributed traffic
+zone_aware: true
+zone_weight: 60        # Strong same-zone preference
+```
+*Result: Strongly favors same-zone to reduce data transfer costs*
 
-Logging in twemproxy is only available when twemproxy is built with logging enabled. By default logs are written to stderr. Twemproxy can also be configured to write logs to a specific file through the -o or --output command-line argument. On a running twemproxy, we can turn log levels up and down by sending it SIGTTIN and SIGTTOU signals respectively and reopen log files by sending it SIGHUP signal.
+---
 
-## Pipelining
+## How It Works
 
-Twemproxy enables proxying multiple client connections onto one or few server connections. This architectural setup makes it ideal for pipelining requests and responses and hence saving on the round trip time.
+### Core Engine
+1. **DNS Discovery**: Automatically resolves hostnames with `-ro` suffix to discover read replicas
+2. **Latency Measurement**: Measures connection latency during normal operations  
+3. **Health Monitoring**: Tracks failures per server and excludes unhealthy ones
+4. **Smart Routing**: Routes traffic based on configured weight distribution
+5. **Automatic Updates**: Re-resolves DNS periodically to discover topology changes
 
-For example, if twemproxy is proxying three client connections onto a single server and we get requests - 'get key\r\n', 'set key 0 0 3\r\nval\r\n' and 'delete key\r\n' on these three connections respectively, twemproxy would try to batch these requests and send them as a single message onto the server connection as 'get key\r\nset key 0 0 3\r\nval\r\ndelete key\r\n'.
+### Cloud Zone Intelligence
+6. **Zone Detection**: Analyzes latency patterns to automatically detect zones (no metadata required)
+7. **Zone Clustering**: Groups servers with similar latency into the same zone
+8. **Cost Optimization**: Calculates route costs considering same-zone vs cross-zone data transfer
+9. **Cache Integration**: Recognizes managed cache endpoints and optimizes DNS resolution intervals
+10. **Health Scoring**: Advanced health checks considering latency thresholds and failure patterns
 
-Pipelining is the reason why twemproxy ends up doing better in terms of throughput even though it introduces an extra hop between the client and server.
+### Server Selection Logic
+- Servers with >3 recent failures are excluded from routing
+- **`latency_weight%`** of traffic goes to the **lowest latency server**
+- **Remaining `(100-latency_weight)%`** is **equally distributed** among **all other healthy servers**
+- When new servers are discovered via DNS, they automatically join the routing pool
+- Seamless failover when servers become unavailable
 
-## Deployment
+---
 
-If you are deploying twemproxy in production, you might consider reading through the [recommendation document](notes/recommendation.md) to understand the parameters you could tune in twemproxy to run it efficiently in the production environment.
+## Traditional Configuration
 
-## Packages
+All original twemproxy features are still supported:
 
-### Ubuntu
+```yaml
+pools:
+    example:
+        listen: 127.0.0.1:22121
+        hash: fnv1a_64
+        distribution: ketama
+        auto_eject_hosts: true
+        redis: true
+        timeout: 400
+        server_retry_timeout: 2000
+        server_failure_limit: 1
+        servers:
+         - 127.0.0.1:6379:1
+         - 127.0.0.1:6380:1
+```
 
-#### PPA Stable
+### Core Configuration Options
 
-https://launchpad.net/~twemproxy/+archive/ubuntu/stable
++ **listen**: The listening address and port (name:port or ip:port) for this server pool
++ **redis**: A boolean value that controls if a server pool speaks redis protocol. Defaults to false.
++ **hash**: The name of the hash function (one_at_a_time, md5, crc16, crc32, fnv1_64, fnv1a_64, etc.)
++ **distribution**: The key distribution mode (ketama, modula, random)
++ **timeout**: The timeout value in msec for server connections
++ **auto_eject_hosts**: Automatically eject failed servers temporarily
++ **server_retry_timeout**: Timeout before retrying ejected servers (msec)
++ **server_failure_limit**: Number of failures before ejecting a server
++ **servers**: List of server address, port and weight (name:port:weight or ip:port:weight)
 
-#### PPA Daily
+---
 
-https://launchpad.net/~twemproxy/+archive/ubuntu/daily
+## Command Line Usage
 
-## Utils
-+ [collectd-plugin](https://github.com/bewie/collectd-twemproxy)
-+ [munin-plugin](https://github.com/eveiga/contrib/tree/nutcracker/plugins/nutcracker)
-+ [twemproxy-ganglia-module](https://github.com/ganglia/gmond_python_modules/tree/master/twemproxy)
-+ [nagios checks](https://github.com/wanelo/nagios-checks/blob/master/check_twemproxy)
-+ [circonus](https://github.com/wanelo-chef/nad-checks/blob/master/recipes/twemproxy.rb)
-+ [puppet module](https://github.com/wuakitv/puppet-twemproxy)
-+ [nutcracker-web](https://github.com/kontera-technologies/nutcracker-web)
-+ [redis-twemproxy agent](https://github.com/Stono/redis-twemproxy-agent)
-+ [sensu-metrics](https://github.com/sensu-plugins/sensu-plugins-twemproxy/blob/master/bin/metrics-twemproxy.rb)
-+ [redis-mgr](https://github.com/idning/redis-mgr)
-+ [smitty for twemproxy failover](https://github.com/areina/smitty)
-+ [Beholder, a Python agent for twemproxy failover](https://github.com/Serekh/beholder)
-+ [chef cookbook](https://supermarket.getchef.com/cookbooks/twemproxy)
-+ [twemsentinel] (https://github.com/yak0/twemsentinel)
+```
+Usage: nutcracker [-?hVdDt] [-v verbosity level] [-o output file]
+                  [-c conf file] [-s stats port] [-a stats addr]
+                  [-i stats interval] [-p pid file] [-m mbuf size]
 
-## Companies using Twemproxy in Production
-+ [Twitter](https://twitter.com/)
-+ [Wikimedia](https://www.wikimedia.org/)
-+ [Pinterest](http://pinterest.com/)
-+ [Snapchat](http://www.snapchat.com/)
-+ [Flickr](https://www.flickr.com)
-+ [Yahoo!](https://www.yahoo.com)
-+ [Tumblr](https://www.tumblr.com/)
-+ [Vine](http://vine.co/)
-+ [Wayfair](http://www.wayfair.com/)
-+ [Kiip](http://www.kiip.me/)
-+ [Wuaki.tv](https://wuaki.tv/)
-+ [Wanelo](http://wanelo.com/)
-+ [Kontera](http://kontera.com/)
-+ [Bright](http://www.bright.com/)
-+ [56.com](http://www.56.com/)
-+ [Digg](http://digg.com/)
-+ [Gawkermedia](http://advertising.gawker.com/)
-+ [3scale.net](http://3scale.net)
-+ [Ooyala](http://www.ooyala.com)
-+ [Twitch](http://twitch.tv)
-+ [Socrata](http://www.socrata.com/)
-+ [Hootsuite](http://hootsuite.com/)
-+ [Trivago](http://www.trivago.com/)
-+ [Machinezone](http://www.machinezone.com)
-+ [Path](https://path.com)
-+ [AOL](http://engineering.aol.com/)
-+ [Soysuper](https://soysuper.com/)
-+ [Vinted](http://vinted.com/)
-+ [Poshmark](https://poshmark.com/)
-+ [FanDuel](https://www.fanduel.com/)
-+ [Bloomreach](http://bloomreach.com/)
-+ [Hootsuite](https://hootsuite.com)
-+ [Tradesy](https://www.tradesy.com/)
-+ [Uber](http://uber.com) ([details](http://highscalability.com/blog/2015/9/14/how-uber-scales-their-real-time-market-platform.html))
-+ [Greta](https://greta.io/)
+Options:
+  -h, --help             : this help
+  -V, --version          : show version and exit
+  -t, --test-conf        : test configuration for syntax errors and exit
+  -d, --daemonize        : run as a daemon
+  -v, --verbose=N        : set logging level (default: 5, min: 0, max: 11)
+  -c, --conf-file=S      : set configuration file (default: conf/nutcracker.yml)
+  -s, --stats-port=N     : set stats monitoring port (default: 22222)
+```
 
-## Issues and Support
+---
 
-Have a bug or a question? Please create an issue here on GitHub!
+## Monitoring & Observability
 
-https://github.com/twitter/twemproxy/issues
+### Stats Endpoint
+Access runtime statistics on port 22222 (default):
+```bash
+curl http://localhost:22222
+```
 
-## Committers
+### Logging
+Enable detailed logging to monitor latency-based routing:
+```bash
+nutcracker -c nutcracker.yml -v 6 -o /var/log/nutcracker.log
+```
 
-* Manju Rajashekhar ([@manju](https://twitter.com/manju))
-* Lin Yang ([@idning](https://github.com/idning))
+Look for log entries like:
+```
+[timestamp] selected best address 0 for 'server' (latency: 15000us, failures: 0, weight: 80%)
+[timestamp] resolved 'redis-cluster-ro.amazonaws.com' to 3 addresses  
+[timestamp] weighted routing: selected second-best address 1 for 'server' (latency: 18000us)
+```
 
-Thank you to all of our [contributors](https://github.com/twitter/twemproxy/graphs/contributors)!
+---
 
 ## License
 

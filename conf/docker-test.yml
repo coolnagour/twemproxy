@@ -1,0 +1,60 @@
+# Docker testing configuration with multiple Redis instances
+# This config demonstrates zone detection with simulated latency
+
+global:
+    worker_processes: 1
+    user: twemproxy
+    group: twemproxy
+
+pools:
+    # Read pool with zone detection
+    redis_read:
+        listen: 0.0.0.0:6378
+        redis: true
+        
+        # Enable all zone detection features
+        latency_routing: true
+        latency_weight: 60                # 60% to fastest, 40% distributed
+        zone_aware: true                  # Enable zone detection
+        zone_weight: 30                   # +30% for same-zone
+        zone_latency_threshold: 10000     # 10ms threshold for Docker network
+        
+        # Enhanced features
+        connection_pooling: true
+        connection_warming: 1
+        dns_resolve_interval: 15
+        dns_failure_threshold: 2
+        
+        # Multiple Redis instances for testing
+        servers:
+            - redis-primary:6379:1
+            - redis-replica-1:6379:1  
+            - redis-replica-2:6379:1
+
+    # Write pool (primary only)
+    redis_write:
+        listen: 0.0.0.0:6379
+        redis: true
+        
+        # Simple write config
+        latency_routing: false
+        zone_aware: true
+        connection_pooling: true
+        
+        servers:
+            - redis-primary:6379:1
+
+    # Monitoring pool (all servers)
+    redis_monitor:
+        listen: 0.0.0.0:6382
+        redis: true
+        
+        # Balanced monitoring
+        latency_routing: true
+        latency_weight: 50
+        zone_aware: false  # Disable for monitoring
+        
+        servers:
+            - redis-primary:6379:1
+            - redis-replica-1:6379:1
+            - redis-replica-2:6379:1
