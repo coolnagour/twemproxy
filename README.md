@@ -59,6 +59,103 @@ pools:
 
 ---
 
+## Docker Quick Start
+
+### Using Docker Compose (Recommended)
+
+1. **Clone and build**:
+```bash
+git clone https://github.com/your-repo/twemproxy.git
+cd twemproxy
+```
+
+2. **Copy example configuration**:
+```bash
+cp docker-compose.example.yml docker-compose.yml
+```
+
+3. **Configure your Redis endpoints**:
+```yaml
+# docker-compose.yml
+services:
+  twemproxy:
+    environment:
+      READ_HOST: "your-redis-ro.cache.amazonaws.com:6379"
+      WRITE_HOST: "your-redis-primary.cache.amazonaws.com:6379"
+      ZONE_WEIGHT: "95"  # 95% same-AZ traffic
+```
+
+4. **Start the services**:
+```bash
+docker-compose up -d
+```
+
+5. **Check status and stats**:
+```bash
+# View logs
+docker-compose logs twemproxy
+
+# Check stats endpoint
+curl http://localhost:22222
+
+# Test Redis connections
+redis-cli -p 6378 ping  # Read pool
+redis-cli -p 6379 ping  # Write pool
+```
+
+### Docker Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `READ_HOST` | `redis-read:6379` | Redis read replica endpoint |
+| `WRITE_HOST` | `redis-write:6379` | Redis primary write endpoint |
+| `ZONE_WEIGHT` | `95` | Percentage preference for same-zone servers |
+| `DNS_RESOLVE_INTERVAL` | `30` | DNS re-resolution interval (seconds) |
+| `DNS_EXPIRATION_MINUTES` | `5` | Minutes to keep addresses not seen in DNS |
+| `DNS_HEALTH_CHECK_INTERVAL` | `30` | Health check interval (seconds) |
+
+### Docker Build and Run
+
+```bash
+# Build the image
+docker build -t twemproxy-enhanced .
+
+# Run with custom configuration
+docker run -d \
+  --name twemproxy \
+  -p 6378:6378 \
+  -p 6379:6379 \
+  -p 22222:22222 \
+  -e READ_HOST="my-redis-ro.amazonaws.com:6379" \
+  -e WRITE_HOST="my-redis-primary.amazonaws.com:6379" \
+  -e ZONE_WEIGHT="99" \
+  twemproxy-enhanced
+```
+
+### AWS ElastiCache Example
+
+```yaml
+# docker-compose.yml for AWS ElastiCache
+version: '3.8'
+services:
+  twemproxy:
+    build: .
+    ports:
+      - "6378:6378"
+      - "6379:6379" 
+      - "22222:22222"
+    environment:
+      READ_HOST: "my-cluster-ro.abc123.ng.0001.use1.cache.amazonaws.com:6379"
+      WRITE_HOST: "my-cluster.abc123.ng.0001.use1.cache.amazonaws.com:6379"
+      ZONE_WEIGHT: "100"  # Prefer same-AZ, failover to cross-AZ when needed
+      DNS_RESOLVE_INTERVAL: "15"  # More frequent DNS checks for ElastiCache
+    restart: unless-stopped
+```
+
+**Result**: Automatic cost-optimized routing with seamless failover!
+
+---
+
 ## Configuration Reference
 
 ### Zone-Aware Routing
