@@ -1085,6 +1085,7 @@ server_dns_init(struct server *server)
     dns->last_latency_check = NULL;
     dns->failure_counts = NULL;
     dns->last_seen = NULL;
+    dns->hostnames = NULL;
     
     /* Enhanced health and zone initialization */
     dns->health_scores = NULL;
@@ -1161,6 +1162,16 @@ server_dns_deinit(struct server *server)
         nc_free(dns->last_seen);
     }
     
+    if (dns->hostnames != NULL) {
+        /* Free individual hostname strings */
+        for (uint32_t i = 0; i < dns->naddresses; i++) {
+            if (dns->hostnames[i].data != NULL) {
+                string_deinit(&dns->hostnames[i]);
+            }
+        }
+        nc_free(dns->hostnames);
+    }
+    
     /* Enhanced health and zone cleanup */
     if (dns->health_scores != NULL) {
         nc_free(dns->health_scores);
@@ -1231,9 +1242,10 @@ server_dns_resolve(struct server *server)
         dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
         dns->failure_counts = nc_alloc(dns->naddresses * sizeof(uint32_t));
         dns->last_seen = nc_alloc(dns->naddresses * sizeof(int64_t));
+        dns->hostnames = nc_alloc(dns->naddresses * sizeof(struct string));
         
         if (dns->latencies == NULL || dns->last_latency_check == NULL || 
-            dns->failure_counts == NULL || dns->last_seen == NULL) {
+            dns->failure_counts == NULL || dns->last_seen == NULL || dns->hostnames == NULL) {
             return NC_ENOMEM;
         }
         
@@ -1243,6 +1255,10 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check[i] = 0;
             dns->failure_counts[i] = 0;
             dns->last_seen[i] = now;
+            
+            /* Initialize hostname with reverse DNS lookup */
+            string_init(&dns->hostnames[i]);
+            server_reverse_dns_lookup(server, i);
         }
         
         dns->last_resolved = now;
@@ -1310,10 +1326,11 @@ server_dns_resolve(struct server *server)
             int64_t *new_last_latency_check = nc_realloc(dns->last_latency_check, new_size * sizeof(int64_t));
             uint32_t *new_failure_counts = nc_realloc(dns->failure_counts, new_size * sizeof(uint32_t));
             int64_t *new_last_seen = nc_realloc(dns->last_seen, new_size * sizeof(int64_t));
+            struct string *new_hostnames = nc_realloc(dns->hostnames, new_size * sizeof(struct string));
             
             if (new_addr_array == NULL || new_latencies == NULL || 
                 new_last_latency_check == NULL || new_failure_counts == NULL ||
-                new_last_seen == NULL) {
+                new_last_seen == NULL || new_hostnames == NULL) {
                 log_error("failed to allocate memory for new DNS address");
                 if (new_addresses) nc_free(new_addresses);
                 return NC_ENOMEM;
@@ -1324,6 +1341,7 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check = new_last_latency_check;
             dns->failure_counts = new_failure_counts;
             dns->last_seen = new_last_seen;
+            dns->hostnames = new_hostnames;
             
             /* Add the new address */
             memcpy(&dns->addresses[dns->naddresses], &new_addresses[i], sizeof(struct sockinfo));
@@ -1331,6 +1349,10 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check[dns->naddresses] = 0;
             dns->failure_counts[dns->naddresses] = 0;
             dns->last_seen[dns->naddresses] = now;
+            
+            /* Initialize hostname for new address */
+            string_init(&dns->hostnames[dns->naddresses]);
+            server_reverse_dns_lookup(server, dns->naddresses);
             
             dns->naddresses++;
             
@@ -1390,6 +1412,11 @@ server_dns_resolve(struct server *server)
                          time_since_seen / 1000000);
             }
             
+            /* Clean up hostname for removed address */
+            if (dns->hostnames[i].data != NULL) {
+                string_deinit(&dns->hostnames[i]);
+            }
+            
             /* Remove this address by shifting everything down */
             for (j = i; j < dns->naddresses - 1; j++) {
                 memcpy(&dns->addresses[j], &dns->addresses[j + 1], sizeof(struct sockinfo));
@@ -1397,6 +1424,7 @@ server_dns_resolve(struct server *server)
                 dns->last_latency_check[j] = dns->last_latency_check[j + 1];
                 dns->failure_counts[j] = dns->failure_counts[j + 1];
                 dns->last_seen[j] = dns->last_seen[j + 1];
+                dns->hostnames[j] = dns->hostnames[j + 1]; /* Move string structure */
             }
             dns->naddresses--;
             removed_count++;
@@ -1455,6 +1483,54 @@ server_dns_check_update(struct server *server)
     }
     
     return NC_OK;
+}
+
+rstatus_t
+server_reverse_dns_lookup(struct server *server, uint32_t addr_idx)
+{
+    struct server_dns *dns;
+    struct sockaddr *addr;
+    char hostname[NI_MAXHOST];
+    int status;
+    
+    ASSERT(server != NULL);
+    
+    dns = server->dns;
+    if (dns == NULL || addr_idx >= dns->naddresses) {
+        return NC_ERROR;
+    }
+    
+    addr = (struct sockaddr *)&dns->addresses[addr_idx].addr;
+    
+    /* Perform reverse DNS lookup */
+    status = getnameinfo(addr, dns->addresses[addr_idx].addrlen, 
+                        hostname, sizeof(hostname), 
+                        NULL, 0, NI_NAMEREQD);
+                        
+    if (status == 0) {
+        /* Successfully got hostname */
+        rstatus_t str_status = string_copy(&dns->hostnames[addr_idx], hostname, strlen(hostname));
+        if (str_status == NC_OK) {
+            log_debug(LOG_VERB, "reverse DNS for addr %"PRIu32": %s", addr_idx, hostname);
+        }
+        return str_status;
+    } else {
+        /* Reverse DNS failed, use IP address as fallback */
+        char addr_str[INET6_ADDRSTRLEN];
+        if (addr->sa_family == AF_INET) {
+            struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
+            inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
+        } else if (addr->sa_family == AF_INET6) {
+            struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)addr;
+            inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
+        } else {
+            strcpy(addr_str, "unknown");
+        }
+        
+        rstatus_t str_status = string_copy(&dns->hostnames[addr_idx], addr_str, strlen(addr_str));
+        log_debug(LOG_VERB, "reverse DNS failed for addr %"PRIu32", using IP: %s", addr_idx, addr_str);
+        return str_status;
+    }
 }
 
 uint32_t
@@ -1772,10 +1848,15 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         int64_t seconds_since_last_seen = (now > 0 && dns->last_seen[i] > 0) ? 
                                           (now - dns->last_seen[i]) / 1000000 : -1;
         
+        /* Get hostname for this address */
+        const char *hostname_str = (dns->hostnames[i].data != NULL) ? 
+                                   (const char *)dns->hostnames[i].data : "unknown";
+        
         addr_written = snprintf(buffer + written, buffer_size - written,
             "      {\n"
             "        \"index\": %"PRIu32",\n"
             "        \"ip\": \"%s\",\n"
+            "        \"hostname\": \"%s\",\n"
             "        \"latency_us\": %"PRIu32",\n"
             "        \"failures\": %"PRIu32",\n"
             "        \"zone_id\": %"PRIu32",\n"
@@ -1785,7 +1866,7 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "        \"current\": %s,\n"
             "        \"seconds_since_last_seen\": %"PRId64"\n"
             "      }%s\n",
-            i, addr_str, dns->latencies[i], dns->failure_counts[i],
+            i, addr_str, hostname_str, dns->latencies[i], dns->failure_counts[i],
             zone_id, zone_type, zone_weight, 
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",

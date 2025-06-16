@@ -78,6 +78,7 @@ struct server_dns {
     int64_t            *last_latency_check; /* Last latency measurement */
     uint32_t           *failure_counts;   /* Failure count per address */
     int64_t            *last_seen;         /* Last time each address was returned by DNS */
+    struct string      *hostnames;        /* Canonical hostname for each address (reverse DNS) */
     
     /* Enhanced health monitoring */
     uint32_t           *health_scores;    /* Rolling health score per address (0-100) */
@@ -196,6 +197,7 @@ uint32_t server_select_best_address(struct server *server);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_size);
+rstatus_t server_reverse_dns_lookup(struct server *server, uint32_t addr_idx);
 
 /* Cloud-agnostic zone and health functions */
 rstatus_t server_detect_zones_by_latency(struct server *server);
