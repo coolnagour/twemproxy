@@ -60,6 +60,8 @@ static struct stats_desc stats_server_desc[] = {
 };
 #undef DEFINE_ACTION
 
+static rstatus_t stats_add_dns_hosts(struct stats *st, struct string *server_name);
+
 void
 stats_describe(void)
 {
