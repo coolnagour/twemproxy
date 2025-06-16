@@ -377,10 +377,10 @@ core_dns_maintenance(struct context *ctx)
                 if (server_should_resolve_dns(server)) {
                     rstatus_t status = server_dns_check_update(server);
                     if (status == NC_OK) {
-                        log_debug(LOG_VERB, "🔄 periodic DNS update successful for '%.*s'",
+                        log_warn("🔄 periodic DNS update successful for '%.*s'",
                                   server->pname.len, server->pname.data);
                     } else {
-                        log_debug(LOG_VERB, "⚠️  periodic DNS update failed for '%.*s'",
+                        log_warn("⚠️  periodic DNS update failed for '%.*s'",
                                   server->pname.len, server->pname.data);
                     }
                 }

@@ -1108,7 +1108,7 @@ server_dns_init(struct server *server)
               server->pname.len, server->pname.data, dns->resolve_interval / 1000000);
     
     /* Perform initial DNS resolution */
-    log_debug(LOG_INFO, "🔍 performing initial DNS resolution for '%.*s'", 
+    log_warn("🔍 performing initial DNS resolution for '%.*s'", 
               server->pname.len, server->pname.data);
     
     status = server_dns_resolve(server);
@@ -1117,7 +1117,7 @@ server_dns_init(struct server *server)
                  server->pname.len, server->pname.data);
         /* Don't fail initialization - we'll retry on first connection */
     } else {
-        log_debug(LOG_INFO, "✅ initial DNS resolution successful for '%.*s' - found %"PRIu32" addresses", 
+        log_warn("✅ initial DNS resolution successful for '%.*s' - found %"PRIu32" addresses", 
                   server->pname.len, server->pname.data, dns->naddresses);
         
         /* Zone detection will happen later after we have real latency measurements */
@@ -1246,7 +1246,7 @@ server_dns_resolve(struct server *server)
     
     dns->last_resolved = nc_usec_now();
     
-    log_debug(LOG_INFO, "resolved '%.*s' to %"PRIu32" addresses",
+    log_warn("resolved '%.*s' to %"PRIu32" addresses",
               dns->hostname.len, dns->hostname.data, dns->naddresses);
     
     /* Log all discovered addresses with their initial latencies */

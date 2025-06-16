@@ -276,7 +276,7 @@ conf_server_each_transform(void *elem, void *data)
                              s->pname.len, s->pname.data);
                     s->is_dynamic = 0;
                 } else {
-                    log_debug(LOG_INFO, "enabled dynamic DNS for server '%.*s'",
+                    log_warn("enabled dynamic DNS for server '%.*s'",
                               s->pname.len, s->pname.data);
                 }
             }
