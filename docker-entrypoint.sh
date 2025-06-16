@@ -11,6 +11,13 @@ DNS_HEALTH_CHECK_INTERVAL=${DNS_HEALTH_CHECK_INTERVAL:-"30"}
 
 # Create configuration from template (running as root)
 echo "Creating configuration as $(whoami)..."
+echo "Writing to /etc/twemproxy/nutcracker.yml"
+
+# Ensure directory exists and is writable
+mkdir -p /etc/twemproxy
+chmod 755 /etc/twemproxy
+
+# Create the configuration file
 cat > /etc/twemproxy/nutcracker.yml << EOL
 # Twemproxy configuration with zone-aware routing
 # Generated from environment variables
@@ -60,28 +67,32 @@ pools:
             - ${READ_HOST}:1
 EOL
 
-# Set proper ownership of the config file and directories
-chown root:root /etc/twemproxy/nutcracker.yml
+# Verify config file was created successfully
+if [ ! -f /etc/twemproxy/nutcracker.yml ]; then
+    echo "ERROR: Failed to create configuration file"
+    exit 1
+fi
+
+# Set proper permissions
 chmod 644 /etc/twemproxy/nutcracker.yml
-chown -R root:root /var/log/twemproxy /var/lib/twemproxy
-chmod 755 /var/log/twemproxy /var/lib/twemproxy
+chmod 755 /var/log/twemproxy /var/lib/twemproxy 2>/dev/null || true
 
 echo "Generated configuration:"
 cat /etc/twemproxy/nutcracker.yml
 echo ""
-echo "Configuration file permissions:"
-ls -la /etc/twemproxy/nutcracker.yml
+echo "Configuration file created successfully."
 echo ""
 
 # Debug: Test the configuration first
 echo "Testing configuration..."
-/usr/local/sbin/nutcracker --test-conf --conf-file=/etc/twemproxy/nutcracker.yml
-if [ $? -ne 0 ]; then
+if /usr/local/sbin/nutcracker --test-conf --conf-file=/etc/twemproxy/nutcracker.yml; then
+    echo "Configuration test passed!"
+else
     echo "Configuration test failed!"
+    echo "Configuration content:"
+    cat /etc/twemproxy/nutcracker.yml
     exit 1
 fi
-
-echo "Configuration test passed!"
 
 # Execute the original command directly (running as root is fine for containers)
 echo "Starting nutcracker..."
