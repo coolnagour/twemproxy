@@ -14,7 +14,7 @@ services:
       WRITE_HOST: "my-redis-primary.cache.amazonaws.com:6379"
       
       # Zone-aware routing configuration
-      ZONE_WEIGHT: "95"                    # 95% traffic to same-AZ
+      ZONE_WEIGHT: "60"                    # 95% traffic to same-AZ
       DNS_RESOLVE_INTERVAL: "10"           # DNS refresh every x seconds
       DNS_EXPIRATION_MINUTES: "2"         # Keep IPs for x minutes after not seen in DNS
       DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every x seconds
