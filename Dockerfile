@@ -80,7 +80,6 @@ LABEL maintainer="Twemproxy Enhanced" \
 ENTRYPOINT ["dumb-init", "--rewrite", "15:2", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/local/sbin/nutcracker", \
      "--conf-file=/etc/twemproxy/nutcracker.yml", \
-     "--verbose=6", \
      "--output=/var/log/twemproxy/nutcracker.log", \
      "--stats-port=22222", \
      "--stats-addr=0.0.0.0", \
