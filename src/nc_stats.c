@@ -1662,7 +1662,7 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
-        int n = nc_snprintf(pos, room, ",\n  \"dns_hosts\": null");
+        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
         if (n < 0 || n >= (int)room) {
             return NC_ERROR;
         }
@@ -1676,7 +1676,7 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
-        int n = nc_snprintf(pos, room, ",\n  \"dns_hosts\": null");
+        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
         if (n < 0 || n >= (int)room) {
             return NC_ERROR;
         }
@@ -1689,11 +1689,23 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
-        int n = nc_snprintf(pos, room, ",\n  %s", buffer);
-        if (n < 0 || n >= (int)room) {
-            return NC_ERROR;
+        /* Replace "read_hosts" with "dns_hosts" in the buffer */
+        char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
+        if (read_hosts_pos != NULL) {
+            /* Copy everything after "read_hosts": */
+            char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
+            int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
+            if (n < 0 || n >= (int)room) {
+                return NC_ERROR;
+            }
+            buf->len += (size_t)n;
+        } else {
+            int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+            if (n < 0 || n >= (int)room) {
+                return NC_ERROR;
+            }
+            buf->len += (size_t)n;
         }
-        buf->len += (size_t)n;
     }
     
     return NC_OK;
