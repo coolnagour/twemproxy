@@ -1644,12 +1644,17 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     server = NULL;
     npool = array_n(&st->owner->pool);
     
+    log_warn("stats: looking for server name '%.*s'", server_name->len, server_name->data);
+    
     for (i = 0; i < npool && server == NULL; i++) {
         struct server_pool *pool = array_get(&st->owner->pool, i);
         nserver = array_n(&pool->server);
         
+        log_warn("stats: checking pool %d with %d servers", i, nserver);
+        
         for (j = 0; j < nserver; j++) {
             struct server *s = array_get(&pool->server, j);
+            log_warn("stats: comparing with server pname '%.*s'", s->pname.len, s->pname.data);
             if (string_compare(&s->pname, server_name) == 0) {
                 server = s;
                 break;
