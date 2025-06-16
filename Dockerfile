@@ -21,7 +21,6 @@ COPY . .
 RUN autoreconf -fvi && \
     CFLAGS="-ggdb3 -O0" ./configure \
         --prefix=/usr/local \
-        --enable-debug=full \
         && \
     make -j$(nproc) && \
     make install DESTDIR=/tmp/install
