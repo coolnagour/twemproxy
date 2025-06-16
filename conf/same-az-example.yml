@@ -19,7 +19,7 @@ pools:
         server_failure_limit: 5
         server_connections: 1
         servers:
-            - staging.abc.ng.0001.euw1.cache.amazonaws.com:6379:1
+            - staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1
 
     # Read pool - zone-aware routing for cost optimization
     redis_read:
@@ -43,4 +43,4 @@ pools:
 
         # ElastiCache read replica endpoint
         servers:
-            - staging-ro.abc.ng.0001.euw1.cache.amazonaws.com:6379:1
+            - staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1

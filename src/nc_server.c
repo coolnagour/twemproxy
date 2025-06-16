@@ -1522,6 +1522,20 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
     }
     
     /* Dynamic DNS server */
+    uint32_t zones_detected = (dns->zone_ids != NULL) ? (dns->next_zone_id - 1) : 0;
+    uint32_t same_zone_count = 0, cross_zone_count = 0;
+    
+    /* Count servers by zone type */
+    if (pool->zone_aware && dns->zone_ids != NULL) {
+        for (i = 0; i < dns->naddresses; i++) {
+            if (dns->zone_ids[i] == dns->local_zone_id) {
+                same_zone_count++;
+            } else {
+                cross_zone_count++;
+            }
+        }
+    }
+    
     written = snprintf(buffer, buffer_size,
         "  \"read_hosts\": {\n"
         "    \"type\": \"dynamic\",\n"
@@ -1530,12 +1544,22 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         "    \"last_resolved\": %"PRId64",\n"
         "    \"addresses\": %"PRIu32",\n"
         "    \"current_address\": %"PRIu32",\n"
+        "    \"zone_aware\": %s,\n"
+        "    \"zone_weight_percent\": %"PRIu32",\n"
+        "    \"zones_detected\": %"PRIu32",\n"
+        "    \"same_zone_servers\": %"PRIu32",\n"
+        "    \"cross_zone_servers\": %"PRIu32",\n"
         "    \"address_details\": [\n",
         dns->hostname.len, dns->hostname.data,
         dns->resolve_interval / 1000000, /* convert to seconds */
         dns->last_resolved,
         dns->naddresses,
-        server->current_addr_idx);
+        server->current_addr_idx,
+        pool->zone_aware ? "true" : "false",
+        pool->zone_weight,
+        zones_detected,
+        same_zone_count,
+        cross_zone_count);
     
     if (written >= buffer_size) return NC_ERROR;
     
@@ -1555,15 +1579,27 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             strcpy(addr_str, "unknown");
         }
         
+        /* Calculate zone weight for this address */
+        uint32_t zone_weight = server_calculate_zone_weight(server, i);
+        uint32_t zone_id = (dns->zone_ids != NULL) ? dns->zone_ids[i] : 0;
+        const char* zone_type = (pool->zone_aware && dns->zone_ids != NULL && zone_id == dns->local_zone_id) ? "same-az" : "cross-az";
+        bool is_healthy = server_is_healthy(server, i);
+        
         addr_written = snprintf(buffer + written, buffer_size - written,
             "      {\n"
             "        \"index\": %"PRIu32",\n"
             "        \"ip\": \"%s\",\n"
             "        \"latency_us\": %"PRIu32",\n"
             "        \"failures\": %"PRIu32",\n"
+            "        \"zone_id\": %"PRIu32",\n"
+            "        \"zone_type\": \"%s\",\n"
+            "        \"zone_weight\": %"PRIu32",\n"
+            "        \"healthy\": %s,\n"
             "        \"current\": %s\n"
             "      }%s\n",
             i, addr_str, dns->latencies[i], dns->failure_counts[i],
+            zone_id, zone_type, zone_weight, 
+            is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",
             (i < dns->naddresses - 1) ? "," : "");
         
