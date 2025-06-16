@@ -15,9 +15,9 @@ services:
 
       # Zone-aware routing configuration
       ZONE_WEIGHT: "95"                    # 95% traffic to same-AZ
-      DNS_RESOLVE_INTERVAL: "30"           # DNS refresh every 30 seconds
+      DNS_RESOLVE_INTERVAL: "10"           # DNS refresh every 30 seconds
       DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for 5 minutes after not seen in DNS
-      DNS_HEALTH_CHECK_INTERVAL: "30"     # Health check every 30 seconds
+      DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every 30 seconds
     volumes:
       - ./logs:/var/log/twemproxy # you will need to logrotate this
     networks:
