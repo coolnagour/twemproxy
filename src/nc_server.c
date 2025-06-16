@@ -1562,10 +1562,21 @@ server_select_best_address(struct server *server)
     /* Cache endpoint discovery (always enabled for cache services) */
     server_discover_cache_endpoints(server);
     
+    /* Check if current server is still healthy - if not, force immediate re-selection */
+    if (server->current_addr_idx < dns->naddresses && 
+        !server_is_healthy(server, server->current_addr_idx)) {
+        log_warn("🚨 CURRENT server addr %"PRIu32" is now UNHEALTHY for '%.*s' - forcing re-selection", 
+                 server->current_addr_idx, server->pname.len, server->pname.data);
+    }
+    
     /* Find best address and collect all healthy servers */
     for (i = 0; i < dns->naddresses; i++) {
         /* Enhanced health checking */
         if (!server_is_healthy(server, i)) {
+            if (i == server->current_addr_idx) {
+                log_warn("⚠️  current server addr %"PRIu32" marked unhealthy for '%.*s'", 
+                         i, server->pname.len, server->pname.data);
+            }
             log_debug(LOG_VVERB, "skipping unhealthy server address %"PRIu32, i);
             continue;
         }
@@ -1598,8 +1609,25 @@ server_select_best_address(struct server *server)
     }
     
     if (healthy_count == 0) {
+        log_error("🚨 NO HEALTHY SERVERS found for '%.*s' - all %"PRIu32" addresses are unhealthy!", 
+                  server->pname.len, server->pname.data, dns->naddresses);
         nc_free(healthy_servers);
         return 0;
+    }
+    
+    /* If current server is unhealthy, it should NOT be in healthy_servers list */
+    /* This ensures we ALWAYS switch away from unhealthy current servers */
+    bool current_is_healthy = false;
+    for (i = 0; i < healthy_count; i++) {
+        if (healthy_servers[i] == server->current_addr_idx) {
+            current_is_healthy = true;
+            break;
+        }
+    }
+    
+    if (!current_is_healthy && server->current_addr_idx < dns->naddresses) {
+        log_warn("🔄 current server addr %"PRIu32" excluded from healthy list - will force switch", 
+                 server->current_addr_idx);
     }
     
     if (healthy_count == 1) {
