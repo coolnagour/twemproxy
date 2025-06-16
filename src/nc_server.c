@@ -1766,9 +1766,9 @@ server_health_check(struct server *server, uint32_t addr_idx)
         if (dns->health_scores == NULL || dns->last_health_check == NULL) {
             return NC_ERROR;
         }
-        
+        uint32_t i;
         /* Initialize all health scores to 100 (healthy) */
-        for (uint32_t i = 0; i < dns->max_addresses; i++) {
+        for (i = 0; i < dns->max_addresses; i++) {
             dns->health_scores[i] = 100;
         }
     }
