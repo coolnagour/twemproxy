@@ -1120,8 +1120,7 @@ server_dns_init(struct server *server)
         log_debug(LOG_INFO, "✅ initial DNS resolution successful for '%.*s' - found %"PRIu32" addresses", 
                   server->pname.len, server->pname.data, dns->naddresses);
         
-        /* Perform initial zone detection */
-        server_detect_zones_by_latency(server);
+        /* Zone detection will happen later after we have real latency measurements */
     }
     
     return NC_OK;
@@ -1207,19 +1206,26 @@ server_dns_resolve(struct server *server)
     }
     
     /* Resolve all addresses */
-    stats_server_incr(server->owner->ctx, server, dns_resolves);
+    if (server->owner != NULL && server->owner->ctx != NULL) {
+        stats_server_incr(server->owner->ctx, server, dns_resolves);
+    }
+    
     status = nc_resolve_multi(&dns->hostname, server->port, &dns->addresses, 
                               &dns->naddresses, dns->max_addresses);
     if (status != NC_OK) {
-        stats_server_incr(server->owner->ctx, server, dns_failures);
+        if (server->owner != NULL && server->owner->ctx != NULL) {
+            stats_server_incr(server->owner->ctx, server, dns_failures);
+        }
         log_error("failed to resolve '%.*s': %s", 
                   dns->hostname.len, dns->hostname.data, strerror(errno));
         return status;
     }
     
     /* Update DNS stats */
-    stats_server_set_ts(server->owner->ctx, server, last_dns_resolved_at, dns->last_resolved);
-    stats_server_set(server->owner->ctx, server, dns_addresses, dns->naddresses);
+    if (server->owner != NULL && server->owner->ctx != NULL) {
+        stats_server_set_ts(server->owner->ctx, server, last_dns_resolved_at, dns->last_resolved);
+        stats_server_set(server->owner->ctx, server, dns_addresses, dns->naddresses);
+    }
     
     /* Allocate latency and failure tracking arrays */
     dns->latencies = nc_alloc(dns->naddresses * sizeof(uint32_t));
