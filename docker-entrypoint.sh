@@ -96,7 +96,9 @@ fi
 
 # Execute the original command directly (running as root is fine for containers)
 echo "Starting nutcracker..."
-echo "Command to execute: $@"
-
+echo "Command we will run to execute: $@"
+echo "Nutcracker version:"
+/usr/local/sbin/nutcracker --version
+echo " >>> lets gooo"
 # Execute the command directly
 exec "$@"

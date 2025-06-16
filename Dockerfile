@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y \
     libyaml-0-2 \
     ca-certificates \
     curl \
+    net-tools \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -83,4 +84,5 @@ CMD ["/usr/local/sbin/nutcracker", \
      "--conf-file=/etc/twemproxy/nutcracker.yml", \
      "--verbose=6", \
      "--output=/var/log/twemproxy/nutcracker.log", \
-     "--stats-port=22222"]
+     "--stats-port=22222", \
+     "--stats-addr=0.0.0.0"]
