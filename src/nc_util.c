@@ -686,6 +686,108 @@ nc_resolve_multi(struct string *name, int port, struct sockinfo **addresses,
 }
 
 /*
+ * Resolve a hostname to multiple addresses and capture canonical hostnames
+ * Returns all available addresses from DNS resolution with their canonical names
+ */
+int
+nc_resolve_multi_with_hostnames(struct string *name, int port, struct sockinfo **addresses, 
+                                char ***hostnames, uint32_t *naddresses, uint32_t max_addresses)
+{
+    struct addrinfo *ai, *cai; /* addrinfo */
+    struct addrinfo hints;
+    char *node, service[NC_UINTMAX_MAXLEN];
+    int status;
+    uint32_t count = 0;
+    struct sockinfo *addr_array;
+    char **hostname_array;
+
+    ASSERT(name != NULL);
+    ASSERT(addresses != NULL);
+    ASSERT(hostnames != NULL);
+    ASSERT(naddresses != NULL);
+    ASSERT(max_addresses > 0);
+
+    /* Unix domain sockets don't support multiple addresses */
+    if (name->data[0] == '/') {
+        *naddresses = 0;
+        return NC_ERROR;
+    }
+
+    /* Allocate memory for addresses and hostnames arrays */
+    addr_array = nc_alloc(max_addresses * sizeof(struct sockinfo));
+    hostname_array = nc_alloc(max_addresses * sizeof(char*));
+    if (addr_array == NULL || hostname_array == NULL) {
+        if (addr_array) nc_free(addr_array);
+        if (hostname_array) nc_free(hostname_array);
+        return NC_ENOMEM;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG | AI_CANONNAME; /* Request canonical name */
+
+    /* Convert hostname to null-terminated string */
+    node = nc_alloc(name->len + 1);
+    if (node == NULL) {
+        nc_free(addr_array);
+        nc_free(hostname_array);
+        return NC_ENOMEM;
+    }
+    nc_memcpy(node, name->data, name->len);
+    node[name->len] = '\0';
+
+    nc_snprintf(service, NC_UINTMAX_MAXLEN, "%d", port);
+
+    status = getaddrinfo(node, service, &hints, &ai);
+    nc_free(node);
+    
+    if (status < 0) {
+        log_error("address resolution of \"%.*s\" port %d failed: %s",
+                  name->len, name->data, port, gai_strerror(status));
+        nc_free(addr_array);
+        nc_free(hostname_array);
+        return NC_ERROR;
+    }
+
+    /* Extract addresses and canonical names */
+    for (cai = ai; cai != NULL && count < max_addresses; cai = cai->ai_next) {
+        addr_array[count].family = cai->ai_family;
+        addr_array[count].addrlen = cai->ai_addrlen;
+        nc_memcpy(&addr_array[count].addr, cai->ai_addr, cai->ai_addrlen);
+        
+        /* Store canonical name or fallback to original name */
+        const char *canonical = (cai->ai_canonname != NULL) ? cai->ai_canonname : (char*)name->data;
+        hostname_array[count] = nc_alloc(strlen(canonical) + 1);
+        if (hostname_array[count] != NULL) {
+            strcpy(hostname_array[count], canonical);
+        } else {
+            /* Allocation failed, use NULL */
+            hostname_array[count] = NULL;
+        }
+        
+        count++;
+    }
+
+    freeaddrinfo(ai);
+
+    if (count == 0) {
+        nc_free(addr_array);
+        nc_free(hostname_array);
+        return NC_ERROR;
+    }
+
+    *addresses = addr_array;
+    *hostnames = hostname_array;
+    *naddresses = count;
+
+    log_debug(LOG_VERB, "resolved \"%.*s\" to %"PRIu32" addresses with hostnames", 
+              name->len, name->data, count);
+
+    return NC_OK;
+}
+
+/*
  * Unresolve the socket address by translating it to a character string
  * describing the host and service
  *

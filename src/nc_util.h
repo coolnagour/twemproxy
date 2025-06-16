@@ -214,6 +214,7 @@ struct sockinfo {
 
 int nc_resolve(struct string *name, int port, struct sockinfo *si);
 int nc_resolve_multi(struct string *name, int port, struct sockinfo **addresses, uint32_t *naddresses, uint32_t max_addresses);
+int nc_resolve_multi_with_hostnames(struct string *name, int port, struct sockinfo **addresses, char ***hostnames, uint32_t *naddresses, uint32_t max_addresses);
 char *nc_unresolve_addr(struct sockaddr *addr, socklen_t addrlen);
 char *nc_unresolve_peer_desc(int sd);
 char *nc_unresolve_desc(int sd);

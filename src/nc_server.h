@@ -197,7 +197,6 @@ uint32_t server_select_best_address(struct server *server);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_size);
-rstatus_t server_reverse_dns_lookup(struct server *server, uint32_t addr_idx);
 
 /* Cloud-agnostic zone and health functions */
 rstatus_t server_detect_zones_by_latency(struct server *server);

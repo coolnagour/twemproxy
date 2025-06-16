@@ -1218,8 +1218,9 @@ server_dns_resolve(struct server *server)
         stats_server_incr(server->owner->ctx, server, dns_resolves);
     }
     
-    status = nc_resolve_multi(&dns->hostname, server->port, &new_addresses, 
-                              &new_naddresses, dns->max_addresses);
+    char **new_hostnames = NULL;
+    status = nc_resolve_multi_with_hostnames(&dns->hostname, server->port, &new_addresses, 
+                                           &new_hostnames, &new_naddresses, dns->max_addresses);
     if (status != NC_OK) {
         if (server->owner != NULL && server->owner->ctx != NULL) {
             stats_server_incr(server->owner->ctx, server, dns_failures);
@@ -1256,14 +1257,32 @@ server_dns_resolve(struct server *server)
             dns->failure_counts[i] = 0;
             dns->last_seen[i] = now;
             
-            /* Initialize hostname with reverse DNS lookup */
+            /* Initialize hostname from the captured canonical name */
             string_init(&dns->hostnames[i]);
-            server_reverse_dns_lookup(server, i);
+            if (new_hostnames != NULL && new_hostnames[i] != NULL) {
+                string_copy(&dns->hostnames[i], new_hostnames[i], strlen(new_hostnames[i]));
+                log_warn("captured canonical hostname for addr %"PRIu32": %s", i, new_hostnames[i]);
+            } else {
+                string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
+                log_warn("no canonical name for addr %"PRIu32", using original: %.*s", 
+                         i, dns->hostname.len, dns->hostname.data);
+            }
         }
         
         dns->last_resolved = now;
         log_warn("initialized with %"PRIu32" addresses for '%.*s'",
                   dns->naddresses, dns->hostname.len, dns->hostname.data);
+        
+        /* Clean up temporary hostname array */
+        if (new_hostnames != NULL) {
+            for (i = 0; i < new_naddresses; i++) {
+                if (new_hostnames[i] != NULL) {
+                    nc_free(new_hostnames[i]);
+                }
+            }
+            nc_free(new_hostnames);
+        }
+        
         return NC_OK;
     }
     
@@ -1350,9 +1369,15 @@ server_dns_resolve(struct server *server)
             dns->failure_counts[dns->naddresses] = 0;
             dns->last_seen[dns->naddresses] = now;
             
-            /* Initialize hostname for new address */
+            /* Initialize hostname for new address from captured canonical name */
             string_init(&dns->hostnames[dns->naddresses]);
-            server_reverse_dns_lookup(server, dns->naddresses);
+            if (new_hostnames != NULL && i < new_naddresses && new_hostnames[i] != NULL) {
+                string_copy(&dns->hostnames[dns->naddresses], new_hostnames[i], strlen(new_hostnames[i]));
+                log_warn("using canonical hostname for new addr: %s", new_hostnames[i]);
+            } else {
+                string_copy(&dns->hostnames[dns->naddresses], dns->hostname.data, dns->hostname.len);
+                log_warn("no canonical name for new addr, using original hostname");
+            }
             
             dns->naddresses++;
             
@@ -1439,9 +1464,17 @@ server_dns_resolve(struct server *server)
                  removed_count, dns->hostname.len, dns->hostname.data, dns->naddresses);
     }
     
-    /* Free the temporary new_addresses array */
+    /* Free the temporary arrays */
     if (new_addresses) {
         nc_free(new_addresses);
+    }
+    if (new_hostnames != NULL) {
+        for (i = 0; i < new_naddresses; i++) {
+            if (new_hostnames[i] != NULL) {
+                nc_free(new_hostnames[i]);
+            }
+        }
+        nc_free(new_hostnames);
     }
     
     dns->last_resolved = now;
@@ -1485,53 +1518,6 @@ server_dns_check_update(struct server *server)
     return NC_OK;
 }
 
-rstatus_t
-server_reverse_dns_lookup(struct server *server, uint32_t addr_idx)
-{
-    struct server_dns *dns;
-    struct sockaddr *addr;
-    char hostname[NI_MAXHOST];
-    int status;
-    
-    ASSERT(server != NULL);
-    
-    dns = server->dns;
-    if (dns == NULL || addr_idx >= dns->naddresses) {
-        return NC_ERROR;
-    }
-    
-    addr = (struct sockaddr *)&dns->addresses[addr_idx].addr;
-    
-    /* Perform reverse DNS lookup */
-    status = getnameinfo(addr, dns->addresses[addr_idx].addrlen, 
-                        hostname, sizeof(hostname), 
-                        NULL, 0, NI_NAMEREQD);
-                        
-    if (status == 0) {
-        /* Successfully got hostname */
-        rstatus_t str_status = string_copy(&dns->hostnames[addr_idx], hostname, strlen(hostname));
-        if (str_status == NC_OK) {
-            log_debug(LOG_VERB, "reverse DNS for addr %"PRIu32": %s", addr_idx, hostname);
-        }
-        return str_status;
-    } else {
-        /* Reverse DNS failed, use IP address as fallback */
-        char addr_str[INET6_ADDRSTRLEN];
-        if (addr->sa_family == AF_INET) {
-            struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
-            inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
-        } else if (addr->sa_family == AF_INET6) {
-            struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)addr;
-            inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
-        } else {
-            strcpy(addr_str, "unknown");
-        }
-        
-        rstatus_t str_status = string_copy(&dns->hostnames[addr_idx], addr_str, strlen(addr_str));
-        log_debug(LOG_VERB, "reverse DNS failed for addr %"PRIu32", using IP: %s", addr_idx, addr_str);
-        return str_status;
-    }
-}
 
 uint32_t
 server_select_best_address(struct server *server)
@@ -1849,8 +1835,13 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
                                           (now - dns->last_seen[i]) / 1000000 : -1;
         
         /* Get hostname for this address */
-        const char *hostname_str = (dns->hostnames[i].data != NULL) ? 
-                                   (const char *)dns->hostnames[i].data : "unknown";
+        const char *hostname_str = "unknown";
+        if (dns->hostnames != NULL && i < dns->naddresses && dns->hostnames[i].data != NULL) {
+            hostname_str = (const char *)dns->hostnames[i].data;
+        } else {
+            log_warn("hostname missing for addr %"PRIu32": hostnames=%p, i=%"PRIu32", naddresses=%"PRIu32, 
+                     i, dns->hostnames, i, dns->naddresses);
+        }
         
         addr_written = snprintf(buffer + written, buffer_size - written,
             "      {\n"
