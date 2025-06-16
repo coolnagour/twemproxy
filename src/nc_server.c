@@ -1278,7 +1278,7 @@ server_dns_resolve(struct server *server)
         if (new_hostnames != NULL) {
             for (i = 0; i < new_naddresses; i++) {
                 if (new_hostnames[i] != NULL) {
-                    nc_free((void*)new_hostnames[i]);
+                    nc_free(new_hostnames[i]);
                 }
             }
             nc_free(new_hostnames);
@@ -1346,11 +1346,11 @@ server_dns_resolve(struct server *server)
             int64_t *new_last_latency_check = nc_realloc(dns->last_latency_check, new_size * sizeof(int64_t));
             uint32_t *new_failure_counts = nc_realloc(dns->failure_counts, new_size * sizeof(uint32_t));
             int64_t *new_last_seen = nc_realloc(dns->last_seen, new_size * sizeof(int64_t));
-            struct string *new_hostnames = nc_realloc(dns->hostnames, new_size * sizeof(struct string));
+            struct string *new_hostnames_array = nc_realloc(dns->hostnames, new_size * sizeof(struct string));
             
             if (new_addr_array == NULL || new_latencies == NULL || 
                 new_last_latency_check == NULL || new_failure_counts == NULL ||
-                new_last_seen == NULL || new_hostnames == NULL) {
+                new_last_seen == NULL || new_hostnames_array == NULL) {
                 log_error("failed to allocate memory for new DNS address");
                 if (new_addresses) nc_free(new_addresses);
                 return NC_ENOMEM;
@@ -1361,7 +1361,7 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check = new_last_latency_check;
             dns->failure_counts = new_failure_counts;
             dns->last_seen = new_last_seen;
-            dns->hostnames = new_hostnames;
+            dns->hostnames = new_hostnames_array;
             
             /* Add the new address */
             memcpy(&dns->addresses[dns->naddresses], &new_addresses[i], sizeof(struct sockinfo));
@@ -1473,7 +1473,7 @@ server_dns_resolve(struct server *server)
     if (new_hostnames != NULL) {
         for (i = 0; i < new_naddresses; i++) {
             if (new_hostnames[i] != NULL) {
-                nc_free((void*)new_hostnames[i]);
+                nc_free(new_hostnames[i]);
             }
         }
         nc_free(new_hostnames);
