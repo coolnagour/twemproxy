@@ -1,6 +1,6 @@
 # Multi-stage Docker build for twemproxy with cloud zone detection
 # Stage 1: Build container (x86 architecture)
-FROM --platform=linux/amd64 ubuntu:22.04 AS builder
+FROM --platform=linux/amd64 ubuntu:24.04 AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -33,7 +33,7 @@ RUN autoreconf -fvi && \
 RUN /tmp/install/usr/local/sbin/nutcracker --version
 
 # Stage 2: Runtime container (minimal)
-FROM --platform=linux/amd64 ubuntu:22.04 AS runtime
+FROM --platform=linux/amd64 ubuntu:24.04 AS runtime
 
 # Install only runtime dependencies
 RUN apt-get update && apt-get install -y \
