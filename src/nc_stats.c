@@ -902,6 +902,12 @@ stats_make_rsp(struct stats *st)
                 return status;
             }
 
+            /* Add DNS host information for dynamic servers */
+            status = stats_add_dns_hosts(st, &sts->name);
+            if (status != NC_OK) {
+                return status;
+            }
+
             status = stats_end_nesting(st);
             if (status != NC_OK) {
                 return status;
@@ -1622,4 +1628,71 @@ stats_show_read_hosts(struct array *server_pool)
         }
         log_stderr("");
     }
+}
+
+static rstatus_t
+stats_add_dns_hosts(struct stats *st, struct string *server_name)
+{
+    rstatus_t status;
+    struct server *server;
+    uint32_t i, j, npool, nserver;
+    char buffer[8192];
+    
+    /* Find the server object by name */
+    server = NULL;
+    npool = array_n(&st->owner->pool);
+    
+    for (i = 0; i < npool && server == NULL; i++) {
+        struct server_pool *pool = array_get(&st->owner->pool, i);
+        nserver = array_n(&pool->server);
+        
+        for (j = 0; j < nserver; j++) {
+            struct server *s = array_get(&pool->server, j);
+            if (string_compare(&s->pname, server_name) == 0) {
+                server = s;
+                break;
+            }
+        }
+    }
+    
+    /* If server not found or not dynamic, add empty object */
+    if (server == NULL || !server->is_dynamic || server->dns == NULL) {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, ",\n  \"dns_hosts\": null");
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+        return NC_OK;
+    }
+    
+    /* Get DNS host information */
+    status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+    if (status != NC_OK) {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, ",\n  \"dns_hosts\": null");
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+        return NC_OK;
+    }
+    
+    /* Add the DNS hosts information to stats */
+    {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, ",\n  %s", buffer);
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+    }
+    
+    return NC_OK;
 }
