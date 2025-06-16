@@ -46,6 +46,10 @@
     ACTION( latency_distributed_sel,STATS_COUNTER,      "# times distributed server was selected")                 \
     ACTION( current_latency_us,     STATS_GAUGE,        "current connection latency in microseconds")              \
     ACTION( last_dns_resolved_at,   STATS_TIMESTAMP,    "timestamp when DNS was last resolved in usec")            \
+    /* zone-aware routing stats */                                                                                 \
+    ACTION( same_zone_selections,   STATS_COUNTER,      "# times same-zone server was selected")                   \
+    ACTION( cross_zone_selections,  STATS_COUNTER,      "# times cross-zone server was selected")                  \
+    ACTION( zones_detected,         STATS_GAUGE,        "number of latency-based zones detected")                  \
     /* data behavior */                                                                                             \
     ACTION( requests,               STATS_COUNTER,      "# requests")                                               \
     ACTION( request_bytes,          STATS_COUNTER,      "total request bytes")                                      \
