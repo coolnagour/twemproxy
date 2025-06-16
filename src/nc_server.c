@@ -1863,10 +1863,10 @@ server_discover_cache_endpoints(struct server *server)
     
     /* Check if hostname looks like a managed cache service endpoint */
     if (dns->hostname.len > 20 && 
-        (nc_strstr(dns->hostname.data, ".cache.") != NULL ||
-         nc_strstr(dns->hostname.data, ".redis.") != NULL ||
-         nc_strstr(dns->hostname.data, ".memcache.") != NULL ||
-         nc_strstr(dns->hostname.data, "cluster") != NULL)) {
+        (strstr((char*)dns->hostname.data, ".cache.") != NULL ||
+         strstr((char*)dns->hostname.data, ".redis.") != NULL ||
+         strstr((char*)dns->hostname.data, ".memcache.") != NULL ||
+         strstr((char*)dns->hostname.data, "cluster") != NULL)) {
         
         log_debug(LOG_INFO, "🔍 cache mode: enhanced discovery for '%.*s'",
                   dns->hostname.len, dns->hostname.data);
@@ -1878,9 +1878,9 @@ server_discover_cache_endpoints(struct server *server)
         }
         
         /* Try to detect read replica endpoints */
-        if (nc_strstr(dns->hostname.data, "-ro") != NULL || 
-            nc_strstr(dns->hostname.data, "read") != NULL ||
-            nc_strstr(dns->hostname.data, "replica") != NULL) {
+        if (strstr((char*)dns->hostname.data, "-ro") != NULL || 
+            strstr((char*)dns->hostname.data, "read") != NULL ||
+            strstr((char*)dns->hostname.data, "replica") != NULL) {
             log_debug(LOG_INFO, "🔍 detected managed cache read replica endpoint");
         }
     }
