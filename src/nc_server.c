@@ -1088,7 +1088,7 @@ server_dns_init(struct server *server)
     /* Enhanced health and zone initialization */
     dns->health_scores = NULL;
     dns->last_health_check = NULL;
-    dns->health_check_interval = 30000000LL; /* 30 seconds */
+    dns->health_check_interval = pool ? pool->dns_health_check_interval : 30000000LL; /* use pool config or 30 seconds default */
     dns->consecutive_failures_limit = pool ? pool->dns_failure_threshold : 3;
     dns->zone_ids = NULL;
     dns->local_zone_id = 0;
@@ -1256,12 +1256,46 @@ server_dns_resolve(struct server *server)
     for (i = 0; i < new_naddresses; i++) {
         bool found = false;
         for (j = 0; j < dns->naddresses; j++) {
-            if (memcmp(&dns->addresses[j].addr, &new_addresses[i].addr, 
-                      sizeof(dns->addresses[j].addr)) == 0) {
-                /* Address still exists, update last_seen */
-                dns->last_seen[j] = now;
-                found = true;
-                break;
+            /* Compare IP addresses properly based on address family */
+            struct sockaddr *existing_addr = (struct sockaddr *)&dns->addresses[j].addr;
+            struct sockaddr *new_addr = (struct sockaddr *)&new_addresses[i].addr;
+            
+            if (existing_addr->sa_family == new_addr->sa_family) {
+                bool addresses_match = false;
+                
+                if (existing_addr->sa_family == AF_INET) {
+                    struct sockaddr_in *existing_in = (struct sockaddr_in *)existing_addr;
+                    struct sockaddr_in *new_in = (struct sockaddr_in *)new_addr;
+                    addresses_match = (existing_in->sin_addr.s_addr == new_in->sin_addr.s_addr &&
+                                     existing_in->sin_port == new_in->sin_port);
+                } else if (existing_addr->sa_family == AF_INET6) {
+                    struct sockaddr_in6 *existing_in6 = (struct sockaddr_in6 *)existing_addr;
+                    struct sockaddr_in6 *new_in6 = (struct sockaddr_in6 *)new_addr;
+                    addresses_match = (memcmp(&existing_in6->sin6_addr, &new_in6->sin6_addr, 
+                                            sizeof(existing_in6->sin6_addr)) == 0 &&
+                                     existing_in6->sin6_port == new_in6->sin6_port);
+                }
+                
+                if (addresses_match) {
+                    /* Address still exists, update last_seen */
+                    dns->last_seen[j] = now;
+                    found = true;
+                    
+                    char addr_str[INET6_ADDRSTRLEN];
+                    if (existing_addr->sa_family == AF_INET) {
+                        struct sockaddr_in *addr_in = (struct sockaddr_in *)existing_addr;
+                        inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
+                    } else if (existing_addr->sa_family == AF_INET6) {
+                        struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)existing_addr;
+                        inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
+                    } else {
+                        strcpy(addr_str, "unknown");
+                    }
+                    log_debug(LOG_VERB, "found existing address %s at index %"PRIu32" for '%.*s'", 
+                             addr_str, j, dns->hostname.len, dns->hostname.data);
+                    
+                    break;
+                }
             }
         }
         
@@ -1304,10 +1338,14 @@ server_dns_resolve(struct server *server)
             if (addr->sa_family == AF_INET) {
                 struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
                 inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
+            } else if (addr->sa_family == AF_INET6) {
+                struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)addr;
+                inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
             } else {
                 strcpy(addr_str, "unknown");
             }
-            log_warn("added new address %s for '%.*s'", addr_str, dns->hostname.len, dns->hostname.data);
+            log_warn("added new address %s for '%.*s' (total addresses: %"PRIu32")", 
+                     addr_str, dns->hostname.len, dns->hostname.data, dns->naddresses);
         }
     }
     

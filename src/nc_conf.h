@@ -74,6 +74,7 @@
 #define CONF_DEFAULT_DNS_FAILURE_THRESHOLD   3
 #define CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL  30         /* in seconds */
 #define CONF_DEFAULT_DNS_EXPIRATION_MINUTES  5          /* expire addresses after 5 minutes */
+#define CONF_DEFAULT_DNS_HEALTH_CHECK_INTERVAL 30       /* health check interval in seconds */
 
 struct conf_listen {
     struct string   pname;   /* listen: as "hostname:port" */
@@ -127,6 +128,7 @@ struct conf_pool {
     int                dns_failure_threshold; /* dns_failure_threshold: failures before unhealthy */
     int                dns_cache_negative_ttl; /* dns_cache_negative_ttl: negative DNS cache TTL */
     int                dns_expiration_minutes; /* dns_expiration_minutes: expire addresses after N minutes */
+    int                dns_health_check_interval; /* dns_health_check_interval: health check interval in seconds */
     
     unsigned           valid:1;               /* valid? */
 };

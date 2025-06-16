@@ -170,6 +170,7 @@ struct server_pool {
     uint32_t           dns_failure_threshold; /* failures before marking server unhealthy */
     int64_t            dns_cache_negative_ttl; /* negative DNS cache TTL (usec) */
     int64_t            dns_expiration_minutes; /* expire addresses after N minutes (usec) */
+    int64_t            dns_health_check_interval; /* health check interval (usec) */
 };
 
 void server_ref(struct conn *conn, void *owner);
