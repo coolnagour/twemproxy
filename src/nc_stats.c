@@ -1,6 +1,7 @@
 /*
  * twemproxy - A fast and lightweight proxy for memcached protocol.
  * Copyright (C) 2011 Twitter, Inc.
+ * Copyright (C) 2024-2025 coolnagour
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,6 +61,8 @@ static struct stats_desc stats_server_desc[] = {
 };
 #undef DEFINE_ACTION
 
+static rstatus_t stats_add_dns_hosts(struct stats *st, struct string *server_name);
+
 void
 stats_describe(void)
 {
@@ -78,6 +81,24 @@ stats_describe(void)
         log_stderr("  %-20s\"%s\"", stats_server_desc[i].name,
                    stats_server_desc[i].desc);
     }
+
+    log_stderr("");
+    log_stderr("enhanced dynamic DNS & latency features:");
+    log_stderr("  dns_addresses        \"# DNS resolved addresses for dynamic servers\"");
+    log_stderr("  dns_resolves         \"# DNS resolution attempts\"");
+    log_stderr("  dns_failures         \"# DNS resolution failures\"");
+    log_stderr("  latency_fastest_sel  \"# times fastest server was selected\"");
+    log_stderr("  latency_distributed_sel \"# times distributed server was selected\"");
+    log_stderr("  current_latency_us   \"current connection latency in microseconds\"");
+    log_stderr("  last_dns_resolved_at \"timestamp when DNS was last resolved in usec\"");
+    log_stderr("");
+    log_stderr("cloud multi-zone optimizations:");
+    log_stderr("  zones_detected       \"number of latency-based zones detected\"");
+    log_stderr("  same_zone_selections \"# times same-zone server was selected\"");
+    log_stderr("  cross_zone_selections \"# times cross-zone server was selected\"");
+    log_stderr("  connection_pool_hits \"# connection pool cache hits\"");
+    log_stderr("  connection_pool_miss \"# connection pool cache misses\"");
+    log_stderr("  health_score_avg     \"average health score across all servers\"");
 }
 
 static void
@@ -884,6 +905,12 @@ stats_make_rsp(struct stats *st)
                 return status;
             }
 
+            /* Add DNS host information for dynamic servers */
+            status = stats_add_dns_hosts(st, &sts->name);
+            if (status != NC_OK) {
+                return status;
+            }
+
             status = stats_end_nesting(st);
             if (status != NC_OK) {
                 return status;
@@ -1499,6 +1526,21 @@ _stats_server_set_ts(struct context *ctx, struct server *server,
 }
 
 void
+_stats_server_set(struct context *ctx, struct server *server,
+                  stats_server_field_t fidx, int64_t val)
+{
+    struct stats_metric *stm;
+
+    stm = stats_server_to_metric(ctx, server, fidx);
+
+    ASSERT(stm->type == STATS_GAUGE);
+    stm->value.counter = val;
+
+    log_debug(LOG_VVVERB, "set gauge field '%.*s' to %"PRId64"", stm->name.len,
+              stm->name.data, stm->value.counter);
+}
+
+void
 _stats_pool_record_latency(struct context *ctx, struct server_pool *pool, int64_t latency)
 {
     struct stats *st;
@@ -1530,4 +1572,146 @@ _stats_server_record_latency(struct context *ctx, struct server *server, int64_t
     for (ind = 0; latency > latency_buckets[ind]; ind++);
     counter = array_get(&sts->latency, ind);
     *counter += 1;
+}
+
+void
+stats_show_read_hosts(struct array *server_pool)
+{
+    uint32_t i, j, npool, nserver;
+    struct server_pool *sp;
+    struct server *server;
+    char buffer[4096];
+    rstatus_t status;
+
+    if (server_pool == NULL) {
+        log_stderr("read hosts: server_pool is NULL");
+        return;
+    }
+
+    npool = array_n(server_pool);
+    log_stderr("");
+    log_stderr("read hosts configuration:");
+
+    for (i = 0; i < npool; i++) {
+        sp = array_get(server_pool, i);
+        nserver = array_n(&sp->server);
+        
+        log_stderr("  pool '%.*s':", sp->name.len, sp->name.data);
+        log_stderr("    zone_aware: %s", sp->zone_aware ? "enabled" : "disabled");
+        if (sp->zone_aware) {
+            log_stderr("    zone_weight: %"PRIu32"%%", sp->zone_weight);
+        }
+        log_stderr("    dns_resolve_interval: %"PRId64" seconds", sp->dns_resolve_interval / 1000000);
+
+        for (j = 0; j < nserver; j++) {
+            server = array_get(&sp->server, j);
+            
+            if (server->is_dynamic && server->dns != NULL) {
+                status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+                if (status == NC_OK) {
+                    log_stderr("    server '%.*s':", server->pname.len, server->pname.data);
+                    log_stderr("      type: dynamic DNS");
+                    log_stderr("      hostname: %.*s", server->dns->hostname.len, server->dns->hostname.data);
+                    log_stderr("      resolved_addresses: %"PRIu32, server->dns->naddresses);
+                    log_stderr("      current_address_index: %"PRIu32, server->current_addr_idx);
+                    if (server->dns->naddresses > 0 && server->current_addr_idx < server->dns->naddresses) {
+                        log_stderr("      current_latency: %"PRIu32" microseconds", 
+                                   server->dns->latencies[server->current_addr_idx]);
+                        log_stderr("      current_failures: %"PRIu32, 
+                                   server->dns->failure_counts[server->current_addr_idx]);
+                    }
+                } else {
+                    log_stderr("    server '%.*s': failed to get read host info", 
+                               server->pname.len, server->pname.data);
+                }
+            } else {
+                log_stderr("    server '%.*s': static configuration", 
+                           server->pname.len, server->pname.data);
+            }
+        }
+        log_stderr("");
+    }
+}
+
+static rstatus_t
+stats_add_dns_hosts(struct stats *st, struct string *server_name)
+{
+    rstatus_t status;
+    struct server *server;
+    uint32_t i, j, npool, nserver;
+    char buffer[8192];
+    
+    /* Find the server object by name */
+    server = NULL;
+    npool = array_n(&st->owner->pool);
+    
+    for (i = 0; i < npool && server == NULL; i++) {
+        struct server_pool *pool = array_get(&st->owner->pool, i);
+        nserver = array_n(&pool->server);
+        
+        for (j = 0; j < nserver; j++) {
+            struct server *s = array_get(&pool->server, j);
+            
+            /* Check if server_name matches the beginning of s->pname (ignoring weight suffix) */
+            if (server_name->len <= s->pname.len && 
+                memcmp(server_name->data, s->pname.data, server_name->len) == 0 &&
+                (server_name->len == s->pname.len || s->pname.data[server_name->len] == ':')) {
+                server = s;
+                break;
+            }
+        }
+    }
+    
+    /* If server not found or not dynamic, add empty object */
+    if (server == NULL || !server->is_dynamic || server->dns == NULL) {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+        return NC_OK;
+    }
+    
+    /* Get DNS host information */
+    status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+    if (status != NC_OK) {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+        return NC_OK;
+    }
+    
+    /* Add the DNS hosts information to stats */
+    {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        /* Replace "read_hosts" with "dns_hosts" in the buffer */
+        char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
+        if (read_hosts_pos != NULL) {
+            /* Copy everything after "read_hosts": */
+            char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
+            int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
+            if (n < 0 || n >= (int)room) {
+                return NC_ERROR;
+            }
+            buf->len += (size_t)n;
+        } else {
+            int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+            if (n < 0 || n >= (int)room) {
+                return NC_ERROR;
+            }
+            buf->len += (size_t)n;
+        }
+    }
+    
+    return NC_OK;
 }

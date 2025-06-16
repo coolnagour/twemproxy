@@ -38,6 +38,18 @@
     ACTION( server_timedout,        STATS_COUNTER,      "# timeouts on server connections")                         \
     ACTION( server_connections,     STATS_GAUGE,        "# active server connections")                              \
     ACTION( server_ejected_at,      STATS_TIMESTAMP,    "timestamp when server was ejected in usec since epoch")    \
+    /* dynamic DNS and latency stats */                                                                            \
+    ACTION( dns_addresses,          STATS_GAUGE,        "# DNS resolved addresses for dynamic servers")             \
+    ACTION( dns_resolves,           STATS_COUNTER,      "# DNS resolution attempts")                                \
+    ACTION( dns_failures,           STATS_COUNTER,      "# DNS resolution failures")                               \
+    ACTION( latency_fastest_sel,    STATS_COUNTER,      "# times fastest server was selected")                     \
+    ACTION( latency_distributed_sel,STATS_COUNTER,      "# times distributed server was selected")                 \
+    ACTION( current_latency_us,     STATS_GAUGE,        "current connection latency in microseconds")              \
+    ACTION( last_dns_resolved_at,   STATS_TIMESTAMP,    "timestamp when DNS was last resolved in usec")            \
+    /* zone-aware routing stats */                                                                                 \
+    ACTION( same_zone_selections,   STATS_COUNTER,      "# times same-zone server was selected")                   \
+    ACTION( cross_zone_selections,  STATS_COUNTER,      "# times cross-zone server was selected")                  \
+    ACTION( zones_detected,         STATS_GAUGE,        "number of latency-based zones detected")                  \
     /* data behavior */                                                                                             \
     ACTION( requests,               STATS_COUNTER,      "# requests")                                               \
     ACTION( request_bytes,          STATS_COUNTER,      "total request bytes")                                      \
@@ -180,6 +192,10 @@ typedef enum stats_server_field {
      _stats_server_set_ts(_ctx, _server, STATS_SERVER_##_name, _val);   \
 } while (0)
 
+#define stats_server_set(_ctx, _server, _name, _val) do {               \
+    _stats_server_set(_ctx, _server, STATS_SERVER_##_name, _val);       \
+} while (0)
+
 #define stats_server_record_latency(_ctx, _server, _val) do {           \
      _stats_server_record_latency(_ctx, _server, _val);                 \
 } while (0)
@@ -206,6 +222,10 @@ typedef enum stats_server_field {
 
 #define stats_server_decr_by(_ctx, _server, _name, _val)
 
+#define stats_server_set(_ctx, _server, _name, _val)
+
+#define stats_server_set_ts(_ctx, _server, _name, _val)
+
 #define stats_server_record_latency(_ctx, _server, _val)
 
 #define stats_pool_record_latency(_ctx, _pool, _val)
@@ -215,6 +235,7 @@ typedef enum stats_server_field {
 #define stats_enabled   NC_STATS
 
 void stats_describe(void);
+void stats_show_read_hosts(struct array *server_pool);
 
 void _stats_pool_incr(struct context *ctx, struct server_pool *pool, stats_pool_field_t fidx);
 void _stats_pool_decr(struct context *ctx, struct server_pool *pool, stats_pool_field_t fidx);
@@ -227,6 +248,7 @@ void _stats_server_decr(struct context *ctx, struct server *server, stats_server
 void _stats_server_incr_by(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_decr_by(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_set_ts(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
+void _stats_server_set(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_record_latency(struct context *ctx, struct server *server, int64_t latency);
 void _stats_pool_record_latency(struct context *ctx, struct server_pool *pool, int64_t latency);
 

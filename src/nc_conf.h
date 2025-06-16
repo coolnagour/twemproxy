@@ -1,6 +1,7 @@
 /*
  * twemproxy - A fast and lightweight proxy for memcached protocol.
  * Copyright (C) 2011 Twitter, Inc.
+ * Copyright (C) 2024-2025 coolnagour
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +62,20 @@
 #define CONF_DEFAULT_MAX_OPENFILES           102400
 #define CONF_DEFAULT_USER                    "nobody"
 #define CONF_DEFAULT_GROUP                   "nobody"
+#define CONF_DEFAULT_DNS_RESOLVE_INTERVAL    30         /* in seconds */
+
+/* Cloud-agnostic defaults */
+#define CONF_DEFAULT_ZONE_AWARE              false
+#define CONF_DEFAULT_ZONE_WEIGHT             25         /* extra weight for same-zone servers */
+#define CONF_DEFAULT_CONNECTION_POOLING      false
+#define CONF_DEFAULT_CONNECTION_WARMING      0
+#define CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT 300        /* in seconds */
+#define CONF_DEFAULT_TLS_ENABLED             false
+#define CONF_DEFAULT_TLS_VERIFY_PEER         true
+#define CONF_DEFAULT_DNS_FAILURE_THRESHOLD   3
+#define CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL  30         /* in seconds */
+#define CONF_DEFAULT_DNS_EXPIRATION_MINUTES  5          /* expire addresses after 5 minutes */
+#define CONF_DEFAULT_DNS_HEALTH_CHECK_INTERVAL 30       /* health check interval in seconds */
 
 struct conf_listen {
     struct string   pname;   /* listen: as "hostname:port" */
@@ -101,6 +116,21 @@ struct conf_pool {
     int                server_retry_timeout;  /* server_retry_timeout: in msec */
     int                server_failure_limit;  /* server_failure_limit: */
     struct array       server;                /* servers: conf_server[] */
+    int                dns_resolve_interval;  /* dns_resolve_interval: DNS re-resolution interval in seconds */
+    
+    /* Cloud-agnostic configuration */
+    int                zone_aware;            /* zone_aware: enable zone-aware routing */
+    int                zone_weight;           /* zone_weight: extra weight for same-zone servers */
+    int                connection_pooling;    /* connection_pooling: enable connection pooling */
+    int                connection_warming;    /* connection_warming: pre-warm connections count */
+    int                connection_idle_timeout; /* connection_idle_timeout: idle timeout in seconds */
+    int                tls_enabled;           /* tls_enabled: enable TLS */
+    int                tls_verify_peer;       /* tls_verify_peer: verify TLS peer certificates */
+    int                dns_failure_threshold; /* dns_failure_threshold: failures before unhealthy */
+    int                dns_cache_negative_ttl; /* dns_cache_negative_ttl: negative DNS cache TTL */
+    int                dns_expiration_minutes; /* dns_expiration_minutes: expire addresses after N minutes */
+    int                dns_health_check_interval; /* dns_health_check_interval: health check interval in seconds */
+    
     unsigned           valid:1;               /* valid? */
 };
 

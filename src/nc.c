@@ -206,6 +206,8 @@ nc_print_run(struct instance *nci)
     loga("run, rabbit run / dig that hole, forget the sun / "
          "and when at last the work is done / don't sit down / "
          "it's time to dig another one");
+
+
 }
 
 static void
@@ -649,6 +651,13 @@ main(int argc, char **argv)
 
         if (describe_stats) {
             stats_describe();
+            
+            /* Also show read host details if config is available */
+            struct conf *cf = conf_create(nci.conf_filename);
+            if (cf != NULL) {
+                stats_show_read_hosts(&cf->pool);
+                conf_destroy(cf);
+            }
         }
 
         exit(0);

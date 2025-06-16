@@ -1,6 +1,7 @@
 /*
  * twemproxy - A fast and lightweight proxy for memcached protocol.
  * Copyright (C) 2011 Twitter, Inc.
+ * Copyright (C) 2024-2025 coolnagour
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -118,6 +119,57 @@ static struct command conf_pool_commands[] = {
       conf_add_server,
       offsetof(struct conf_pool, server) },
 
+    { string("dns_resolve_interval"),
+      conf_set_num,
+      offsetof(struct conf_pool, dns_resolve_interval) },
+
+    /* Cloud-agnostic configuration options */
+    { string("zone_aware"),
+      conf_set_bool,
+      offsetof(struct conf_pool, zone_aware) },
+
+    { string("zone_weight"),
+      conf_set_num,
+      offsetof(struct conf_pool, zone_weight) },
+
+
+
+    { string("connection_pooling"),
+      conf_set_bool,
+      offsetof(struct conf_pool, connection_pooling) },
+
+    { string("connection_warming"),
+      conf_set_num,
+      offsetof(struct conf_pool, connection_warming) },
+
+    { string("connection_idle_timeout"),
+      conf_set_num,
+      offsetof(struct conf_pool, connection_idle_timeout) },
+
+    { string("tls_enabled"),
+      conf_set_bool,
+      offsetof(struct conf_pool, tls_enabled) },
+
+    { string("tls_verify_peer"),
+      conf_set_bool,
+      offsetof(struct conf_pool, tls_verify_peer) },
+
+    { string("dns_failure_threshold"),
+      conf_set_num,
+      offsetof(struct conf_pool, dns_failure_threshold) },
+
+    { string("dns_cache_negative_ttl"),
+      conf_set_num,
+      offsetof(struct conf_pool, dns_cache_negative_ttl) },
+
+    { string("dns_expiration_minutes"),
+      conf_set_num,
+      offsetof(struct conf_pool, dns_expiration_minutes) },
+
+    { string("dns_health_check_interval"),
+      conf_set_num,
+      offsetof(struct conf_pool, dns_health_check_interval) },
+
     null_command
 };
 
@@ -187,6 +239,7 @@ conf_server_each_transform(void *elem, void *data)
     struct conf_server *cs = elem;
     struct array *server = data;
     struct server *s;
+    rstatus_t status;
 
     ASSERT(cs->valid);
 
@@ -209,9 +262,41 @@ conf_server_each_transform(void *elem, void *data)
 
     s->next_retry = 0LL;
     s->failure_count = 0;
+    
+    /* Initialize dynamic DNS fields */
+    s->dns = NULL;
+    s->current_addr_idx = 0;
+    
+    /* Check if this is a dynamic DNS server (contains -ro in hostname) */
+    s->is_dynamic = 0;
+    if (s->addrstr.len > 3) {
+        char *hostname = nc_alloc(s->addrstr.len + 1);
+        if (hostname != NULL) {
+            nc_memcpy(hostname, s->addrstr.data, s->addrstr.len);
+            hostname[s->addrstr.len] = '\0';
+            
+            if (strstr(hostname, "-ro") != NULL) {
+                s->is_dynamic = 1;
+                
+                /* Initialize dynamic DNS for read-only endpoints */
+                status = server_dns_init(s);
+                if (status != NC_OK) {
+                    log_warn("failed to initialize dynamic DNS for server '%.*s'",
+                             s->pname.len, s->pname.data);
+                    s->is_dynamic = 0;
+                } else {
+                    log_warn("enabled dynamic DNS for server '%.*s'",
+                              s->pname.len, s->pname.data);
+                }
+            }
+            
+            nc_free(hostname);
+        }
+    }
 
-    log_debug(LOG_VERB, "transform to server %"PRIu32" '%.*s'",
-              s->idx, s->pname.len, s->pname.data);
+    log_debug(LOG_VERB, "transform to server %"PRIu32" '%.*s' (dynamic: %s)",
+              s->idx, s->pname.len, s->pname.data, 
+              s->is_dynamic ? "yes" : "no");
 
     return NC_OK;
 }
@@ -247,6 +332,20 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->server_connections = CONF_UNSET_NUM;
     cp->server_retry_timeout = CONF_UNSET_NUM;
     cp->server_failure_limit = CONF_UNSET_NUM;
+    cp->dns_resolve_interval = CONF_UNSET_NUM;
+    
+    /* Cloud-agnostic initialization */
+    cp->zone_aware = CONF_UNSET_NUM;
+    cp->zone_weight = CONF_UNSET_NUM;
+    cp->connection_pooling = CONF_UNSET_NUM;
+    cp->connection_warming = CONF_UNSET_NUM;
+    cp->connection_idle_timeout = CONF_UNSET_NUM;
+    cp->tls_enabled = CONF_UNSET_NUM;
+    cp->tls_verify_peer = CONF_UNSET_NUM;
+    cp->dns_failure_threshold = CONF_UNSET_NUM;
+    cp->dns_cache_negative_ttl = CONF_UNSET_NUM;
+    cp->dns_expiration_minutes = CONF_UNSET_NUM;
+    cp->dns_health_check_interval = CONF_UNSET_NUM;
 
     array_null(&cp->server);
 
@@ -353,6 +452,22 @@ conf_pool_each_transform(void *elem, void *data)
     sp->server_failure_limit = (uint32_t)cp->server_failure_limit;
     sp->auto_eject_hosts = cp->auto_eject_hosts ? 1 : 0;
     sp->preconnect = cp->preconnect ? 1 : 0;
+    
+    /* Dynamic DNS configuration */
+    sp->dns_resolve_interval = (int64_t)cp->dns_resolve_interval * 1000000LL; /* convert to microseconds */
+    
+    /* Cloud-agnostic configuration */
+    sp->zone_aware = cp->zone_aware ? 1 : 0;
+    sp->zone_weight = (uint32_t)cp->zone_weight;
+    sp->connection_pooling = cp->connection_pooling ? 1 : 0;
+    sp->connection_warming = (uint32_t)cp->connection_warming;
+    sp->connection_idle_timeout = (int64_t)cp->connection_idle_timeout * 1000000LL; /* convert to microseconds */
+    sp->tls_enabled = cp->tls_enabled ? 1 : 0;
+    sp->tls_verify_peer = cp->tls_verify_peer ? 1 : 0;
+    sp->dns_failure_threshold = (uint32_t)cp->dns_failure_threshold;
+    sp->dns_cache_negative_ttl = (int64_t)cp->dns_cache_negative_ttl * 1000000LL; /* convert to microseconds */
+    sp->dns_expiration_minutes = (int64_t)cp->dns_expiration_minutes * 60000000LL; /* convert to microseconds */
+    sp->dns_health_check_interval = (int64_t)cp->dns_health_check_interval * 1000000LL; /* convert to microseconds */
 
     status = server_init(&sp->server, &cp->server, sp);
     if (status != NC_OK) {
@@ -1498,6 +1613,60 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
 
     if (cp->server_failure_limit == CONF_UNSET_NUM) {
         cp->server_failure_limit = CONF_DEFAULT_SERVER_FAILURE_LIMIT;
+    }
+
+    if (cp->dns_resolve_interval == CONF_UNSET_NUM) {
+        cp->dns_resolve_interval = CONF_DEFAULT_DNS_RESOLVE_INTERVAL;
+    }
+
+    /* Cloud-agnostic defaults */
+    if (cp->zone_aware == CONF_UNSET_NUM) {
+        cp->zone_aware = CONF_DEFAULT_ZONE_AWARE;
+    }
+
+    if (cp->zone_weight == CONF_UNSET_NUM) {
+        cp->zone_weight = CONF_DEFAULT_ZONE_WEIGHT;
+    } else if (cp->zone_weight > 100) {
+        log_error("conf: directive \"zone_weight:\" must be between 0 and 100");
+        return NC_ERROR;
+    }
+
+
+
+    if (cp->connection_pooling == CONF_UNSET_NUM) {
+        cp->connection_pooling = CONF_DEFAULT_CONNECTION_POOLING;
+    }
+
+    if (cp->connection_warming == CONF_UNSET_NUM) {
+        cp->connection_warming = CONF_DEFAULT_CONNECTION_WARMING;
+    }
+
+    if (cp->connection_idle_timeout == CONF_UNSET_NUM) {
+        cp->connection_idle_timeout = CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT;
+    }
+
+    if (cp->tls_enabled == CONF_UNSET_NUM) {
+        cp->tls_enabled = CONF_DEFAULT_TLS_ENABLED;
+    }
+
+    if (cp->tls_verify_peer == CONF_UNSET_NUM) {
+        cp->tls_verify_peer = CONF_DEFAULT_TLS_VERIFY_PEER;
+    }
+
+    if (cp->dns_failure_threshold == CONF_UNSET_NUM) {
+        cp->dns_failure_threshold = CONF_DEFAULT_DNS_FAILURE_THRESHOLD;
+    }
+
+    if (cp->dns_cache_negative_ttl == CONF_UNSET_NUM) {
+        cp->dns_cache_negative_ttl = CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL;
+    }
+
+    if (cp->dns_expiration_minutes == CONF_UNSET_NUM) {
+        cp->dns_expiration_minutes = CONF_DEFAULT_DNS_EXPIRATION_MINUTES;
+    }
+
+    if (cp->dns_health_check_interval == CONF_UNSET_NUM) {
+        cp->dns_health_check_interval = CONF_DEFAULT_DNS_HEALTH_CHECK_INTERVAL;
     }
 
     if (!cp->redis && cp->redis_auth.len > 0) {

@@ -1,5 +1,8 @@
 twemproxy is a fast and lightweight proxy for memcached protocol
 Copyright (C) 2012 Twitter, Inc.
+Copyright (C) 2024-2025 coolnagour
+
+Enhanced with zone-aware routing and dynamic DNS resolution features.
 
 Portions of twemproxy were inspired from nginx: http://nginx.org/
 

@@ -345,6 +345,51 @@ core_error(struct context *ctx, struct conn *conn)
 }
 
 static void
+core_dns_maintenance(struct context *ctx)
+{
+    uint32_t i, j, npool, nserver;
+    static int64_t last_dns_check = 0;
+    int64_t now;
+    
+    now = nc_usec_now();
+    if (now < 0) {
+        return;
+    }
+    
+    /* Rate limit DNS checks to every 5 seconds */
+    if ((now - last_dns_check) < 5000000LL) {
+        return;
+    }
+    
+    last_dns_check = now;
+    
+    /* Check all server pools for dynamic DNS servers */
+    npool = array_n(&ctx->pool);
+    for (i = 0; i < npool; i++) {
+        struct server_pool *pool = array_get(&ctx->pool, i);
+        
+        nserver = array_n(&pool->server);
+        for (j = 0; j < nserver; j++) {
+            struct server *server = array_get(&pool->server, j);
+            
+            if (server->is_dynamic && server->dns != NULL) {
+                /* Check if DNS resolution is needed */
+                if (server_should_resolve_dns(server)) {
+                    rstatus_t status = server_dns_check_update(server);
+                    if (status == NC_OK) {
+                        log_warn("🔄 periodic DNS update successful for '%.*s'",
+                                  server->pname.len, server->pname.data);
+                    } else {
+                        log_warn("⚠️  periodic DNS update failed for '%.*s'",
+                                  server->pname.len, server->pname.data);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void
 core_timeout(struct context *ctx)
 {
     for (;;) {
@@ -446,6 +491,9 @@ core_loop(struct context *ctx)
     }
 
     core_timeout(ctx);
+    
+    /* Periodic DNS maintenance for dynamic servers */
+    core_dns_maintenance(ctx);
 
     stats_swap(ctx->stats);
 

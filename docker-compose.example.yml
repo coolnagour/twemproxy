@@ -1,0 +1,33 @@
+version: '3.3'
+
+services:
+  # Twemproxy with zone-aware routing
+  twemproxy:
+    image: bobbymaher/twemproxy:0.0.14
+    ports:
+      - "6378:6378"  # Redis read port
+      - "6379:6379"  # Redis write port
+      - "22222:22222" # Stats port
+    environment:
+      # Redis server hostnames (can be DNS names for dynamic resolution)
+      READ_HOST: "staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
+      WRITE_HOST: "staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
+
+      # Zone-aware routing configuration
+      ZONE_WEIGHT: "95"                    # 95% traffic to same-AZ
+      DNS_RESOLVE_INTERVAL: "30"           # DNS refresh every 30 seconds
+      DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for 5 minutes after not seen in DNS
+      DNS_HEALTH_CHECK_INTERVAL: "30"     # Health check every 30 seconds
+    volumes:
+      - ./logs:/var/log/twemproxy # you will need to logrotate this
+    networks:
+      - redis-network
+    restart: unless-stopped
+
+
+networks:
+  redis-network:
+    driver: bridge
+
+volumes:
+  logs:
