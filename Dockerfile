@@ -1,17 +1,15 @@
 # Multi-stage Docker build for twemproxy with cloud zone detection
-# Stage 1: Build container (x86 architecture)
-FROM --platform=linux/amd64 ubuntu:24.04 AS builder
+# Stage 1: Build container using Alpine (like the working example)
+FROM --platform=linux/amd64 alpine:3.19 AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
+# Install build dependencies (Alpine style)
+RUN apk --no-cache add \
+    alpine-sdk \
     autoconf \
     automake \
     libtool \
-    pkg-config \
-    libyaml-dev \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+    yaml-dev \
+    git
 
 # Set working directory
 WORKDIR /build
@@ -19,11 +17,11 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build twemproxy
+# Build twemproxy (using debug=full like the working example)
 RUN autoreconf -fvi && \
-    ./configure \
+    CFLAGS="-ggdb3 -O0" ./configure \
         --prefix=/usr/local \
-        --enable-debug=no \
+        --enable-debug=full \
         && \
     make -j$(nproc) && \
     make install DESTDIR=/tmp/install
@@ -33,20 +31,19 @@ RUN /tmp/install/usr/local/sbin/nutcracker --version && \
     echo "Checking if stats are compiled in:" && \
     /tmp/install/usr/local/sbin/nutcracker --describe-stats | head -5
 
-# Stage 2: Runtime container (minimal)
-FROM --platform=linux/amd64 ubuntu:24.04 AS runtime
+# Stage 2: Runtime container (Alpine)
+FROM --platform=linux/amd64 alpine:3.19 AS runtime
 
-# Install only runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libyaml-0-2 \
+# Install runtime dependencies (Alpine)
+RUN apk --no-cache add \
+    yaml \
     ca-certificates \
     curl \
-    net-tools \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    dumb-init \
+    bash
 
-# Create user for running twemproxy
-RUN useradd -r -s /bin/false -d /var/lib/twemproxy twemproxy && \
+# Create user for running twemproxy (Alpine style)
+RUN adduser -D -s /bin/false twemproxy && \
     mkdir -p /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy && \
     chown twemproxy:twemproxy /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy
 
@@ -79,9 +76,12 @@ LABEL maintainer="Twemproxy Enhanced" \
 # Keep as root for entrypoint (will switch users in entrypoint script)
 # USER twemproxy
 
-# Set entrypoint and default command
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# Set entrypoint and default command (using dumb-init like working example)
+ENTRYPOINT ["dumb-init", "--rewrite", "15:2", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/local/sbin/nutcracker", \
      "--conf-file=/etc/twemproxy/nutcracker.yml", \
      "--verbose=6", \
-     "--output=/var/log/twemproxy/nutcracker.log"]
+     "--output=/var/log/twemproxy/nutcracker.log", \
+     "--stats-port=22222", \
+     "--stats-addr=0.0.0.0", \
+     "--stats-interval=30000"]
