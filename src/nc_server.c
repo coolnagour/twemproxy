@@ -1260,8 +1260,9 @@ server_dns_resolve(struct server *server)
             /* Initialize hostname from the captured canonical name */
             string_init(&dns->hostnames[i]);
             if (new_hostnames != NULL && new_hostnames[i] != NULL) {
-                string_copy(&dns->hostnames[i], new_hostnames[i], strlen(new_hostnames[i]));
-                log_warn("captured canonical hostname for addr %"PRIu32": %s", i, new_hostnames[i]);
+                char *canonical_name = new_hostnames[i];
+                string_copy(&dns->hostnames[i], canonical_name, strlen(canonical_name));
+                log_warn("captured canonical hostname for addr %"PRIu32": %s", i, canonical_name);
             } else {
                 string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
                 log_warn("no canonical name for addr %"PRIu32", using original: %.*s", 
@@ -1277,7 +1278,7 @@ server_dns_resolve(struct server *server)
         if (new_hostnames != NULL) {
             for (i = 0; i < new_naddresses; i++) {
                 if (new_hostnames[i] != NULL) {
-                    nc_free(new_hostnames[i]);
+                    nc_free((void*)new_hostnames[i]);
                 }
             }
             nc_free(new_hostnames);
@@ -1372,8 +1373,9 @@ server_dns_resolve(struct server *server)
             /* Initialize hostname for new address from captured canonical name */
             string_init(&dns->hostnames[dns->naddresses]);
             if (new_hostnames != NULL && i < new_naddresses && new_hostnames[i] != NULL) {
-                string_copy(&dns->hostnames[dns->naddresses], new_hostnames[i], strlen(new_hostnames[i]));
-                log_warn("using canonical hostname for new addr: %s", new_hostnames[i]);
+                char *canonical_name = new_hostnames[i];
+                string_copy(&dns->hostnames[dns->naddresses], canonical_name, strlen(canonical_name));
+                log_warn("using canonical hostname for new addr: %s", canonical_name);
             } else {
                 string_copy(&dns->hostnames[dns->naddresses], dns->hostname.data, dns->hostname.len);
                 log_warn("no canonical name for new addr, using original hostname");
@@ -1471,7 +1473,7 @@ server_dns_resolve(struct server *server)
     if (new_hostnames != NULL) {
         for (i = 0; i < new_naddresses; i++) {
             if (new_hostnames[i] != NULL) {
-                nc_free(new_hostnames[i]);
+                nc_free((void*)new_hostnames[i]);
             }
         }
         nc_free(new_hostnames);
