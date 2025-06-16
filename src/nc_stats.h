@@ -188,6 +188,10 @@ typedef enum stats_server_field {
      _stats_server_set_ts(_ctx, _server, STATS_SERVER_##_name, _val);   \
 } while (0)
 
+#define stats_server_set(_ctx, _server, _name, _val) do {               \
+    _stats_server_set(_ctx, _server, STATS_SERVER_##_name, _val);       \
+} while (0)
+
 #define stats_server_record_latency(_ctx, _server, _val) do {           \
      _stats_server_record_latency(_ctx, _server, _val);                 \
 } while (0)
@@ -214,6 +218,10 @@ typedef enum stats_server_field {
 
 #define stats_server_decr_by(_ctx, _server, _name, _val)
 
+#define stats_server_set(_ctx, _server, _name, _val)
+
+#define stats_server_set_ts(_ctx, _server, _name, _val)
+
 #define stats_server_record_latency(_ctx, _server, _val)
 
 #define stats_pool_record_latency(_ctx, _pool, _val)
@@ -236,6 +244,7 @@ void _stats_server_decr(struct context *ctx, struct server *server, stats_server
 void _stats_server_incr_by(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_decr_by(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_set_ts(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
+void _stats_server_set(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_record_latency(struct context *ctx, struct server *server, int64_t latency);
 void _stats_pool_record_latency(struct context *ctx, struct server_pool *pool, int64_t latency);
 

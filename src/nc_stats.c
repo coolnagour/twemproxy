@@ -1518,6 +1518,21 @@ _stats_server_set_ts(struct context *ctx, struct server *server,
 }
 
 void
+_stats_server_set(struct context *ctx, struct server *server,
+                  stats_server_field_t fidx, int64_t val)
+{
+    struct stats_metric *stm;
+
+    stm = stats_server_to_metric(ctx, server, fidx);
+
+    ASSERT(stm->type == STATS_GAUGE);
+    stm->value.counter = val;
+
+    log_debug(LOG_VVVERB, "set gauge field '%.*s' to %"PRId64"", stm->name.len,
+              stm->name.data, stm->value.counter);
+}
+
+void
 _stats_pool_record_latency(struct context *ctx, struct server_pool *pool, int64_t latency)
 {
     struct stats *st;

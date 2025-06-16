@@ -1385,7 +1385,7 @@ server_select_best_address(struct server *server)
     if (rand_val < pool->latency_weight) {
         /* Send to best server */
         stats_server_incr(pool->ctx, server, latency_fastest_sel);
-        stats_server_set(pool->ctx, server, STATS_SERVER_current_latency_us, dns->latencies[best_idx]);
+        stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[best_idx]);
         nc_free(healthy_servers);
         log_debug(LOG_INFO, "→ selected FASTEST address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, rand: %"PRIu32" < %"PRIu32"%%)",
                   best_idx, server->pname.len, server->pname.data, 
@@ -1561,10 +1561,12 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         if (written >= buffer_size) return NC_ERROR;
     }
     
-    addr_written = snprintf(buffer + written, buffer_size - written,
-        "    ]\n"
-        "  }");
-    written += addr_written;
+    {
+        size_t final_written = snprintf(buffer + written, buffer_size - written,
+            "    ]\n"
+            "  }");
+        written += final_written;
+    }
     
     return (written < buffer_size) ? NC_OK : NC_ERROR;
 }
