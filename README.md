@@ -747,6 +747,14 @@ Pipelining is the reason why twemproxy ends up doing better in terms of throughp
 If you are deploying twemproxy in production, you might consider reading through the [recommendation document](notes/recommendation.md) to understand the parameters you could tune in twemproxy to run it efficiently in the production environment.
 
 
+## docker hub deployment
+```
+docker build -t twemproxy-enhanced .
+docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:0.0.1
+docker push bobbymaher/twemproxy:0.0.1
+docker push bobbymaher/twemproxy:latest
+```
+
 ## License
 
 Copyright 2012 Twitter, Inc.

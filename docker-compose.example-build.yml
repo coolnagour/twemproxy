@@ -1,18 +1,18 @@
-version: '3.3'
+version: '3.8'
 
 services:
   # Twemproxy with zone-aware routing
   twemproxy:
-    image: bobbymaher/twemproxy:0.0.2
+    build: .
     ports:
       - "6378:6378"  # Redis read port
-      - "6379:6379"  # Redis write port
+      - "6379:6379"  # Redis write port  
       - "22222:22222" # Stats port
     environment:
       # Redis server hostnames (can be DNS names for dynamic resolution)
-      READ_HOST: "staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
-      WRITE_HOST: "staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
-
+      READ_HOST: "my-redis-ro.cache.amazonaws.com:6379"
+      WRITE_HOST: "my-redis-primary.cache.amazonaws.com:6379"
+      
       # Zone-aware routing configuration
       ZONE_WEIGHT: "95"                    # 95% traffic to same-AZ
       DNS_RESOLVE_INTERVAL: "30"           # DNS refresh every 30 seconds
