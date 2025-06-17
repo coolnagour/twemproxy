@@ -2170,15 +2170,24 @@ server_detect_zones_by_latency(struct server *server)
     avg_latency = total_latency / healthy_count;
     
     /* 
-     * Auto-detect low latency threshold using statistical outlier detection:
-     * Servers with latency <= (min + 25% of range) are considered "local zone"
-     * This groups the lowest latency servers together automatically
+     * Auto-detect low latency threshold using more aggressive outlier detection:
+     * Only servers very close to minimum latency are considered "local zone"
      */
     uint32_t latency_range = max_latency - min_latency;
-    low_latency_threshold = min_latency + (latency_range / 4); /* 25% above minimum */
     
-    /* Ensure threshold is reasonable - at least allow servers within 10ms of minimum */
-    uint32_t min_threshold = min_latency + 10000; /* 10ms */
+    /* Use 15% of range above minimum, but cap at reasonable values */
+    low_latency_threshold = min_latency + (latency_range / 6); /* 15% above minimum */
+    
+    /* Dynamic minimum threshold based on absolute latency values */
+    uint32_t min_threshold;
+    if (min_latency < 1000) {
+        min_threshold = min_latency + 500; /* 0.5ms for very low latency */
+    } else if (min_latency < 5000) {
+        min_threshold = min_latency + 1000; /* 1ms for low latency */ 
+    } else {
+        min_threshold = min_latency + 2000; /* 2ms for higher latency */
+    }
+    
     if (low_latency_threshold < min_threshold) {
         low_latency_threshold = min_threshold;
     }
