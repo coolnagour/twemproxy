@@ -1580,7 +1580,7 @@ stats_show_read_hosts(struct array *server_pool)
     uint32_t i, j, npool, nserver;
     struct server_pool *sp;
     struct server *server;
-    char buffer[4096];
+    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
     rstatus_t status;
 
     if (server_pool == NULL) {
@@ -1639,7 +1639,7 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     rstatus_t status;
     struct server *server;
     uint32_t i, j, npool, nserver;
-    char buffer[8192];
+    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
     
     /* Find the server object by name */
     server = NULL;
