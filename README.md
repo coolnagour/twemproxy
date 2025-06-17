@@ -754,7 +754,7 @@ If you are deploying twemproxy in production, you might consider reading through
 
 ## docker hub deployment
 ```
-TAG=2.0.25
+TAG=2.0.27
 docker build -t twemproxy-enhanced .
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:$TAG
 docker push bobbymaher/twemproxy:$TAG

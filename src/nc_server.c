@@ -24,6 +24,9 @@
 #include <nc_conf.h>
 #include <nc_client.h>
 
+/* Forward declarations */
+static void server_update_dynamic_connections(struct server *server);
+
 static void
 server_resolve(struct server *server, struct conn *conn)
 {
@@ -1693,23 +1696,16 @@ server_select_best_address(struct server *server)
         log_debug(LOG_VERB, "🌍 zone routing for '%.*s': %"PRIu32" same-zone, %"PRIu32" other-zone servers (zone_weight: %"PRIu32"%%)", 
                   server->pname.len, server->pname.data, same_zone_count, other_zone_count, pool->zone_weight);
         
-        /* Aggressive prioritization of untested servers */
+        /* VERY AGGRESSIVE: Always prioritize untested servers for zone detection */
         uint32_t untested_server = UINT32_MAX;
         for (i = 0; i < healthy_count; i++) {
             uint32_t idx = healthy_servers[i];
             /* If latency is still default (untested) */
             if (dns->latencies[idx] == DEFAULT_LATENCY_USEC) {
-                int64_t now = nc_usec_now();
-                int64_t time_since_seen = (now > 0 && dns->last_seen[idx] > 0) ? 
-                                          (now - dns->last_seen[idx]) : 0;
-                /* Prioritize any untested server discovered recently (within 2 minutes) */
-                if (time_since_seen < 120000000LL) {
-                    untested_server = idx;
-                    log_warn("🚀 AGGRESSIVE: prioritizing untested server addr %"PRIu32" for '%.*s' (latency=%"PRIu32"μs, discovered %"PRId64"s ago)", 
-                             idx, server->pname.len, server->pname.data, 
-                             dns->latencies[idx], time_since_seen / 1000000);
-                    break;
-                }
+                untested_server = idx;
+                log_warn("🚀 FORCING probe of untested server addr %"PRIu32" for '%.*s' (latency=%"PRIu32"μs) - needed for zone detection", 
+                         idx, server->pname.len, server->pname.data, dns->latencies[idx]);
+                break;
             }
         }
         
@@ -1727,25 +1723,37 @@ server_select_best_address(struct server *server)
         static uint32_t probe_counter = 0;
         probe_counter++;
         
-        /* Every 20th selection (~20-40 seconds with typical traffic), probe a different server */
-        if (probe_counter % 20 == 0 && healthy_count > 1) {
+        /* Every 5th selection for more aggressive probing of untested servers */
+        if (probe_counter % 5 == 0 && healthy_count > 1) {
             uint32_t probe_idx = UINT32_MAX;
             int64_t now = nc_usec_now();
             
-            /* Find servers that haven't been measured recently */
+            /* First priority: Find untested servers (default latency) */
             for (i = 0; i < healthy_count; i++) {
                 uint32_t idx = healthy_servers[i];
-                if (idx != server->current_addr_idx) { /* Don't probe current server */
-                    int64_t time_since_latency_check = (now > 0 && dns->last_latency_check[idx] > 0) ? 
-                                                       (now - dns->last_latency_check[idx]) : LLONG_MAX;
-                    /* If latency hasn't been checked in 5+ minutes, probe this server */
-                    if (time_since_latency_check > 300000000LL) { /* 5 minutes */
-                        probe_idx = idx;
-                        log_warn("🔄 probing server addr %"PRIu32" for '%.*s' (latency not checked for %"PRId64"s)", 
-                                 idx, server->pname.len, server->pname.data, 
-                                 time_since_latency_check / 1000000);
-                        break;
-                    }
+                if (idx != server->current_addr_idx && dns->latencies[idx] == DEFAULT_LATENCY_USEC) {
+                    probe_idx = idx;
+                    log_warn("🔄 PRIORITY probe of untested server addr %"PRIu32" for '%.*s' (still at default latency)", 
+                             idx, server->pname.len, server->pname.data);
+                    break;
+                }
+            }
+            
+            /* Second priority: Find servers that haven't been measured recently */
+            if (probe_idx == UINT32_MAX) {
+                for (i = 0; i < healthy_count; i++) {
+                    uint32_t idx = healthy_servers[i];
+                    if (idx != server->current_addr_idx) { /* Don't probe current server */
+                        int64_t time_since_latency_check = (now > 0 && dns->last_latency_check[idx] > 0) ? 
+                                                           (now - dns->last_latency_check[idx]) : LLONG_MAX;
+                        /* If latency hasn't been checked in 2+ minutes, probe this server */
+                        if (time_since_latency_check > 120000000LL) { /* 2 minutes */
+                            probe_idx = idx;
+                            log_warn("🔄 probing server addr %"PRIu32" for '%.*s' (latency not checked for %"PRId64"s)", 
+                                     idx, server->pname.len, server->pname.data, 
+                                     time_since_latency_check / 1000000);
+                            break;
+                        }
                 }
             }
             
