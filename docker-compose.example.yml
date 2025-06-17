@@ -3,7 +3,7 @@ version: '3.3'
 services:
   # Twemproxy with zone-aware routing
   twemproxy:
-    image: bobbymaher/twemproxy:2.0.21
+    image: bobbymaher/twemproxy:2.0.24
     ports:
       - "6378:6378"  # Redis read port
       - "6379:6379"  # Redis write port
@@ -14,10 +14,15 @@ services:
       WRITE_HOST: "staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
 
       # Zone-aware routing configuration
-      ZONE_WEIGHT: "20"                    # 95% traffic to same-AZ
-      DNS_RESOLVE_INTERVAL: "10"           # DNS refresh every 30 seconds
-      DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for 5 minutes after not seen in DNS
-      DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every 30 seconds
+      ZONE_WEIGHT: "20"                    # % traffic to same-AZ
+      DNS_RESOLVE_INTERVAL: "10"           # DNS refresh every x seconds
+      DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for x minutes after not seen in DNS
+      DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every x seconds
+      
+      # Connection management  
+      CONNECTION_POOLING: "true"          # Keep pooling enabled for efficiency
+      CONNECTION_WARMING: "0"             # No connection pre-warming
+      SERVER_CONNECTIONS: "3"             # Allow multiple connections per server for load balancing
     volumes:
       - ./logs:/var/log/twemproxy # you will need to logrotate this
     networks:

@@ -113,6 +113,9 @@ redis-cli -p 6379 ping  # Write pool
 | `DNS_RESOLVE_INTERVAL` | `30` | DNS re-resolution interval (seconds) |
 | `DNS_EXPIRATION_MINUTES` | `5` | Minutes to keep addresses not seen in DNS |
 | `DNS_HEALTH_CHECK_INTERVAL` | `30` | Health check interval (seconds) |
+| `CONNECTION_POOLING` | `true` | Enable connection pooling (`true`/`false`) |
+| `CONNECTION_WARMING` | `1` | Number of connections to pre-warm |
+| `SERVER_CONNECTIONS` | `1` | Maximum connections per server |
 
 ### Docker Build and Run
 
@@ -749,7 +752,7 @@ If you are deploying twemproxy in production, you might consider reading through
 
 ## docker hub deployment
 ```
-TAG=2.0.21
+TAG=2.0.24
 docker build -t twemproxy-enhanced .
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:$TAG
 docker push bobbymaher/twemproxy:$TAG

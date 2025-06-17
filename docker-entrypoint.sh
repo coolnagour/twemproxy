@@ -8,10 +8,17 @@ ZONE_WEIGHT=${ZONE_WEIGHT:-"95"}
 DNS_RESOLVE_INTERVAL=${DNS_RESOLVE_INTERVAL:-"30"}
 DNS_EXPIRATION_MINUTES=${DNS_EXPIRATION_MINUTES:-"5"}
 DNS_HEALTH_CHECK_INTERVAL=${DNS_HEALTH_CHECK_INTERVAL:-"30"}
+CONNECTION_POOLING=${CONNECTION_POOLING:-"true"}
+CONNECTION_WARMING=${CONNECTION_WARMING:-"1"}
+SERVER_CONNECTIONS=${SERVER_CONNECTIONS:-"1"}
 
 # Create configuration from template (running as root)
 echo "Creating configuration as $(whoami)..."
 echo "Writing to /etc/twemproxy/nutcracker.yml"
+echo "Environment variables:"
+echo "  ZONE_WEIGHT: $ZONE_WEIGHT"
+echo "  SERVER_CONNECTIONS: $SERVER_CONNECTIONS"
+echo "  CONNECTION_POOLING: $CONNECTION_POOLING"
 
 # Ensure directory exists and is writable
 mkdir -p /etc/twemproxy
@@ -50,7 +57,7 @@ pools:
         timeout: 2000
         server_retry_timeout: 10000
         server_failure_limit: 1
-        server_connections: 1
+        server_connections: ${SERVER_CONNECTIONS}
 
         # Zone-aware configuration
         zone_aware: true
@@ -60,8 +67,8 @@ pools:
         dns_health_check_interval: ${DNS_HEALTH_CHECK_INTERVAL}
 
         # Connection pooling for efficiency
-        connection_pooling: true
-        connection_warming: 1
+        connection_pooling: ${CONNECTION_POOLING}
+        connection_warming: ${CONNECTION_WARMING}
 
         servers:
             - ${READ_HOST}:1
