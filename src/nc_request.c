@@ -558,6 +558,14 @@ req_forward_stats(struct context *ctx, struct server *server, struct msg *msg)
 
     stats_server_incr(ctx, server, requests);
     stats_server_incr_by(ctx, server, request_bytes, msg->mlen);
+    
+    /* Increment per-address request counter for dynamic DNS servers */
+    if (server->is_dynamic && server->dns != NULL) {
+        uint32_t addr_idx = server->current_addr_idx;
+        if (addr_idx < server->dns->naddresses) {
+            server->dns->request_counts[addr_idx]++;
+        }
+    }
 }
 
 static void

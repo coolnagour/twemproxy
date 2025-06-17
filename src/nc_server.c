@@ -1163,6 +1163,14 @@ server_dns_deinit(struct server *server)
         nc_free(dns->last_seen);
     }
     
+    if (dns->last_connected != NULL) {
+        nc_free(dns->last_connected);
+    }
+    
+    if (dns->request_counts != NULL) {
+        nc_free(dns->request_counts);
+    }
+    
     if (dns->hostnames != NULL) {
         /* Free individual hostname strings */
         for (uint32_t i = 0; i < dns->naddresses; i++) {
@@ -1244,10 +1252,13 @@ server_dns_resolve(struct server *server)
         dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
         dns->failure_counts = nc_alloc(dns->naddresses * sizeof(uint32_t));
         dns->last_seen = nc_alloc(dns->naddresses * sizeof(int64_t));
+        dns->last_connected = nc_alloc(dns->naddresses * sizeof(int64_t));
+        dns->request_counts = nc_alloc(dns->naddresses * sizeof(uint64_t));
         dns->hostnames = nc_alloc(dns->naddresses * sizeof(struct string));
         
         if (dns->latencies == NULL || dns->last_latency_check == NULL || 
-            dns->failure_counts == NULL || dns->last_seen == NULL || dns->hostnames == NULL) {
+            dns->failure_counts == NULL || dns->last_seen == NULL || 
+            dns->last_connected == NULL || dns->request_counts == NULL || dns->hostnames == NULL) {
             return NC_ENOMEM;
         }
         
@@ -1257,6 +1268,8 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check[i] = 0;
             dns->failure_counts[i] = 0;
             dns->last_seen[i] = now;
+            dns->last_connected[i] = 0;
+            dns->request_counts[i] = 0;
             
             /* Initialize hostname from the captured canonical name */
             string_init(&dns->hostnames[i]);
@@ -1347,11 +1360,13 @@ server_dns_resolve(struct server *server)
             int64_t *new_last_latency_check = nc_realloc(dns->last_latency_check, new_size * sizeof(int64_t));
             uint32_t *new_failure_counts = nc_realloc(dns->failure_counts, new_size * sizeof(uint32_t));
             int64_t *new_last_seen = nc_realloc(dns->last_seen, new_size * sizeof(int64_t));
+            int64_t *new_last_connected = nc_realloc(dns->last_connected, new_size * sizeof(int64_t));
+            uint64_t *new_request_counts = nc_realloc(dns->request_counts, new_size * sizeof(uint64_t));
             struct string *new_hostnames_array = nc_realloc(dns->hostnames, new_size * sizeof(struct string));
             
             if (new_addr_array == NULL || new_latencies == NULL || 
                 new_last_latency_check == NULL || new_failure_counts == NULL ||
-                new_last_seen == NULL || new_hostnames_array == NULL) {
+                new_last_seen == NULL || new_last_connected == NULL || new_request_counts == NULL || new_hostnames_array == NULL) {
                 log_error("failed to allocate memory for new DNS address");
                 if (new_addresses) nc_free(new_addresses);
                 return NC_ENOMEM;
@@ -1362,6 +1377,8 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check = new_last_latency_check;
             dns->failure_counts = new_failure_counts;
             dns->last_seen = new_last_seen;
+            dns->last_connected = new_last_connected;
+            dns->request_counts = new_request_counts;
             dns->hostnames = new_hostnames_array;
             
             /* Add the new address */
@@ -1370,6 +1387,8 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check[dns->naddresses] = 0;
             dns->failure_counts[dns->naddresses] = 0;
             dns->last_seen[dns->naddresses] = now;
+            dns->last_connected[dns->naddresses] = 0;
+            dns->request_counts[dns->naddresses] = 0;
             
             /* Initialize hostname for new address from captured canonical name */
             string_init(&dns->hostnames[dns->naddresses]);
@@ -1832,6 +1851,7 @@ server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency
     }
     
     dns->last_latency_check[addr_idx] = nc_usec_now();
+    dns->last_connected[addr_idx] = nc_usec_now();
     
     return NC_OK;
 }
@@ -1946,10 +1966,12 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         const char* zone_type = (pool->zone_aware && dns->zone_ids != NULL && zone_id == dns->local_zone_id) ? "same-az" : "cross-az";
         bool is_healthy = server_is_healthy(server, i);
         
-        /* Calculate seconds since last seen in DNS */
+        /* Calculate seconds since last seen in DNS and last used for connection */
         int64_t now = nc_usec_now();
-        int64_t seconds_since_last_seen = (now > 0 && dns->last_seen[i] > 0) ? 
-                                          (now - dns->last_seen[i]) / 1000000 : -1;
+        int64_t last_seen_in_dns_lookup = (now > 0 && dns->last_seen[i] > 0) ? 
+                                           (now - dns->last_seen[i]) / 1000000 : -1;
+        int64_t last_chosen_for_connection = (now > 0 && dns->last_connected[i] > 0) ? 
+                                              (now - dns->last_connected[i]) / 1000000 : -1;
         
         /* Get hostname for this address */
         const char *cname_str = "unknown";
@@ -1972,13 +1994,17 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "        \"zone_weight\": %"PRIu32",\n"
             "        \"healthy\": %s,\n"
             "        \"current\": %s,\n"
-            "        \"seconds_since_last_seen\": %"PRId64"\n"
+            "        \"last_seen_in_dns_lookup\": %"PRId64",\n"
+            "        \"last_chosen_for_connection\": %"PRId64",\n"
+            "        \"requests\": %"PRIu64"\n"
             "      }%s\n",
             i, addr_str, cname_str, dns->latencies[i], dns->failure_counts[i],
             zone_id, zone_type, zone_weight, 
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",
-            seconds_since_last_seen,
+            last_seen_in_dns_lookup,
+            last_chosen_for_connection,
+            dns->request_counts[i],
             (i < dns->naddresses - 1) ? "," : "");
         
         written += addr_written;
