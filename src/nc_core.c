@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 #include <nc_core.h>
 #include <nc_conf.h>
 #include <nc_server.h>
@@ -347,8 +348,9 @@ core_error(struct context *ctx, struct conn *conn)
 static void
 core_dns_maintenance(struct context *ctx)
 {
-    uint32_t i, j, npool, nserver;
+    uint32_t i, j, k, npool, nserver;
     static int64_t last_dns_check = 0;
+    static int64_t last_forced_probe = 0;
     int64_t now;
     
     now = nc_usec_now();
@@ -382,6 +384,75 @@ core_dns_maintenance(struct context *ctx)
                     } else {
                         log_warn("⚠️  periodic DNS update failed for '%.*s'",
                                   server->pname.len, server->pname.data);
+                    }
+                }
+                
+                /* FORCED PROBING: Periodic forced probing every 10 seconds to ensure all servers get tested */
+                if ((now - last_forced_probe) >= 10000000LL) { /* 10 seconds */
+                    struct server_dns *dns = server->dns;
+                    bool found_untested = false;
+                    
+                    /* Look for servers with default latency (untested) */
+                    for (k = 0; k < dns->naddresses; k++) {
+                        if (dns->latencies[k] == 100) { /* DEFAULT_LATENCY_USEC */
+                            char addr_str[INET6_ADDRSTRLEN];
+                            
+                            /* Convert address to string for logging */
+                            if (dns->addresses[k].family == AF_INET) {
+                                struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addresses[k].addr;
+                                inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
+                            } else if (dns->addresses[k].family == AF_INET6) {
+                                struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&dns->addresses[k].addr;
+                                inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
+                            } else {
+                                snprintf(addr_str, sizeof(addr_str), "unknown");
+                            }
+                            
+                            log_warn("🚀 FORCED PROBE: Found untested server %s (addr_idx %"PRIu32") for '%.*s' - initiating connection to measure latency",
+                                     addr_str, k, server->pname.len, server->pname.data);
+                            
+                            /* Force test this server by temporarily setting it as current */
+                            uint32_t old_current = server->current_addr_idx;
+                            server->current_addr_idx = k;
+                            server->info = dns->addresses[k];
+                            
+                            /* Try to establish a test connection */
+                            struct conn *test_conn = server_conn(server);
+                            if (test_conn != NULL) {
+                                rstatus_t connect_status = server_connect(ctx, server, test_conn);
+                                if (connect_status == NC_OK) {
+                                    log_warn("✅ FORCED PROBE: Successfully connected to %s (addr_idx %"PRIu32") for '%.*s'",
+                                             addr_str, k, server->pname.len, server->pname.data);
+                                    /* Connection successful - latency will be measured in the connection callback */
+                                    server_close(ctx, test_conn);
+                                } else {
+                                    log_warn("❌ FORCED PROBE: Failed to connect to %s (addr_idx %"PRIu32") for '%.*s' - marking with high latency",
+                                             addr_str, k, server->pname.len, server->pname.data);
+                                    /* Connection failed - set a high latency to indicate failure */
+                                    dns->latencies[k] = 500000; /* 500ms - high latency for failed connection */
+                                    server_close(ctx, test_conn);
+                                }
+                            } else {
+                                log_warn("❌ FORCED PROBE: Could not create test connection for %s (addr_idx %"PRIu32")",
+                                         addr_str, k);
+                                dns->latencies[k] = 500000; /* 500ms - high latency for failed connection */
+                            }
+                            
+                            /* Restore original current address */
+                            server->current_addr_idx = old_current;
+                            if (old_current < dns->naddresses) {
+                                server->info = dns->addresses[old_current];
+                            }
+                            
+                            found_untested = true;
+                            break; /* Only test one server per maintenance cycle */
+                        }
+                    }
+                    
+                    if (found_untested) {
+                        last_forced_probe = now;
+                        log_warn("🔄 FORCED PROBE: Completed probe cycle for '%.*s' - next probe in 10 seconds",
+                                 server->pname.len, server->pname.data);
                     }
                 }
             }
