@@ -1273,6 +1273,13 @@ server_dns_resolve(struct server *server)
         /* Update dynamic server connections after initial DNS resolution */
         server_update_dynamic_connections(server);
         
+        /* Validate address count before allocation to prevent excessive memory usage */
+        if (dns->naddresses > 1000) { /* Reasonable limit for DNS addresses */
+            log_error("DNS returned excessive address count %"PRIu32" for '%.*s', limiting to 1000",
+                      dns->naddresses, server->pname.len, server->pname.data);
+            dns->naddresses = 1000;
+        }
+        
         /* Allocate tracking arrays */
         dns->latencies = nc_alloc(dns->naddresses * sizeof(uint32_t));
         dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
@@ -1461,12 +1468,12 @@ server_dns_resolve(struct server *server)
         bool should_expire = false;
         
         /* Expire address if it hasn't been seen in DNS for expiration_threshold time */
-        /* For currently active address (current_addr_idx), also require failure threshold */
-        /* For inactive addresses, just time-based expiration is sufficient */
+        /* For inactive addresses, time-based expiration is sufficient */
+        /* For currently active address, use a longer threshold but still expire if not seen in DNS */
         if (time_since_seen > expiration_threshold) {
             if (i == server->current_addr_idx) {
-                /* Current address: require both time and failure thresholds */
-                should_expire = (dns->failure_counts[i] > (pool ? pool->dns_failure_threshold : 3));
+                /* Current address: use 2x expiration threshold to be more conservative */
+                should_expire = (time_since_seen > (2 * expiration_threshold));
             } else {
                 /* Non-current address: time-based expiration only */
                 should_expire = true;
@@ -1485,11 +1492,11 @@ server_dns_resolve(struct server *server)
             }
             
             if (i == server->current_addr_idx) {
-                log_warn("expiring current address %s for '%.*s' (not seen for %"PRId64"s, %"PRIu32" failures > threshold)",
+                log_warn("🕐 expiring current address %s for '%.*s' (not seen in DNS for %"PRId64"s, exceeds 2x threshold)",
                          addr_str, dns->hostname.len, dns->hostname.data, 
-                         time_since_seen / 1000000, dns->failure_counts[i]);
+                         time_since_seen / 1000000);
             } else {
-                log_warn("expiring inactive address %s for '%.*s' (not seen for %"PRId64"s)",
+                log_warn("🕐 expiring inactive address %s for '%.*s' (not seen in DNS for %"PRId64"s)",
                          addr_str, dns->hostname.len, dns->hostname.data, 
                          time_since_seen / 1000000);
             }
@@ -1688,13 +1695,14 @@ server_select_best_address(struct server *server)
     }
     
     /* Zone-aware server selection with high preference for same-zone servers */
-    if (pool->zone_aware && dns->zone_ids != NULL) {
+    if (pool->zone_aware && dns->zone_ids != NULL && dns->naddresses > 0) {
         uint32_t same_zone_count = 0;
         uint32_t *same_zone_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
         uint32_t *other_zone_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
         uint32_t other_zone_count = 0;
         
         if (same_zone_servers == NULL || other_zone_servers == NULL) {
+            log_error("Failed to allocate zone server arrays for %"PRIu32" addresses", dns->naddresses);
             if (same_zone_servers) nc_free(same_zone_servers);
             if (other_zone_servers) nc_free(other_zone_servers);
             nc_free(healthy_servers);
@@ -1753,8 +1761,11 @@ server_select_best_address(struct server *server)
         
         /* Periodically probe other servers to refresh their latency measurements */
         /* This prevents servers from getting "stuck" with old high latency readings */
-        static uint32_t probe_counter = 0;
-        probe_counter++;
+        /* Use server-specific counter to avoid thread safety issues */
+        if (dns->last_zone_analysis == 0) {
+            dns->last_zone_analysis = nc_usec_now(); /* Initialize probe counter base */
+        }
+        uint32_t probe_counter = (uint32_t)((nc_usec_now() - dns->last_zone_analysis) / 1000000); /* Seconds since init */
         
         /* Every 5th selection (~5-10 seconds with typical traffic), probe a different server */
         if (probe_counter % 5 == 0 && healthy_count > 1) {
@@ -2163,7 +2174,7 @@ server_detect_zones_by_latency(struct server *server)
     total_latency = 0;
     
     for (i = 0; i < dns->naddresses; i++) {
-        if (dns->failure_counts[i] <= 2) { /* Only consider healthy servers */
+        if (dns->failure_counts[i] <= dns->consecutive_failures_limit) { /* Only consider healthy servers */
             healthy_count++;
             total_latency += dns->latencies[i];
             if (dns->latencies[i] < min_latency) {
@@ -2200,7 +2211,7 @@ server_detect_zones_by_latency(struct server *server)
     dns->next_zone_id = 2;
     
     for (i = 0; i < dns->naddresses; i++) {
-        if (dns->failure_counts[i] > 2) {
+        if (dns->failure_counts[i] > dns->consecutive_failures_limit) {
             dns->zone_ids[i] = 99; /* Unhealthy zone */
             continue;
         }
@@ -2357,8 +2368,8 @@ server_health_check(struct server *server, uint32_t addr_idx)
         health_score -= ((latency - 100000) / 10000); /* -1 point per 10ms over 100ms */
     }
     
-    /* Ensure score doesn't go below 0 */
-    if (health_score > 100) health_score = 0; /* Handle underflow */
+    /* Ensure score doesn't go below 0 - handle underflow properly */
+    if (health_score > 10000 || health_score == UINT32_MAX) health_score = 0;
     
     /* Update health score with exponential moving average */
     dns->health_scores[addr_idx] = (dns->health_scores[addr_idx] * 7 + health_score * 3) / 10;
