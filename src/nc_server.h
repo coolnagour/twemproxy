@@ -80,6 +80,7 @@ struct server_dns {
     int64_t            *last_seen;         /* Last time each address was returned by DNS */
     int64_t            *last_connected;    /* Last time each address was used for connection establishment */
     uint64_t           *request_counts;   /* Number of requests sent to each address */
+    int64_t            *last_probe_attempt; /* Last time each address was probed for latency */
     struct string      *hostnames;        /* Canonical hostname for each address (reverse DNS) */
     
     /* Enhanced health monitoring */

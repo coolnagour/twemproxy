@@ -1176,7 +1176,8 @@ server_dns_deinit(struct server *server)
     
     if (dns->hostnames != NULL) {
         /* Free individual hostname strings */
-        for (uint32_t i = 0; i < dns->naddresses; i++) {
+        uint32_t i;
+        for (i = 0; i < dns->naddresses; i++) {
             if (dns->hostnames[i].data != NULL) {
                 string_deinit(&dns->hostnames[i]);
             }
@@ -1423,6 +1424,14 @@ server_dns_resolve(struct server *server)
             } else {
                 strcpy(addr_str, "unknown");
             }
+            
+            /* Force immediate test connection to new server for latency measurement */
+            log_warn("🔬 NEW SERVER DISCOVERED: forcing immediate probe of addr %"PRIu32" (%s) for zone detection", 
+                     dns->naddresses - 1, addr_str);
+                     
+            /* Set this as a high-priority untested server that should be probed ASAP */
+            dns->latencies[dns->naddresses - 1] = DEFAULT_LATENCY_USEC; /* Ensure it's marked as untested */
+            
             log_warn("added new address %s for '%.*s' (total addresses: %"PRIu32")", 
                      addr_str, dns->hostname.len, dns->hostname.data, dns->naddresses);
             
@@ -1698,14 +1707,23 @@ server_select_best_address(struct server *server)
         
         /* VERY AGGRESSIVE: Always prioritize untested servers for zone detection */
         uint32_t untested_server = UINT32_MAX;
+        int64_t now = nc_usec_now();
+        
         for (i = 0; i < healthy_count; i++) {
             uint32_t idx = healthy_servers[i];
             /* If latency is still default (untested) */
             if (dns->latencies[idx] == DEFAULT_LATENCY_USEC) {
-                untested_server = idx;
-                log_warn("🚀 FORCING probe of untested server addr %"PRIu32" for '%.*s' (latency=%"PRIu32"μs) - needed for zone detection", 
-                         idx, server->pname.len, server->pname.data, dns->latencies[idx]);
-                break;
+                /* Check if this server was discovered recently and needs immediate probing */
+                int64_t time_since_seen = (now > 0 && dns->last_seen[idx] > 0) ? 
+                                          (now - dns->last_seen[idx]) : 0;
+                
+                /* Force probing of newly discovered servers within 15 minutes */
+                if (time_since_seen < 900000000LL) { /* 15 minutes */
+                    untested_server = idx;
+                    log_warn("🚀 CRITICAL: Forcing probe of untested server addr %"PRIu32" for '%.*s' (latency=%"PRIu32"μs, seen %"PRId64"s ago) - REQUIRED for zone detection", 
+                             idx, server->pname.len, server->pname.data, dns->latencies[idx], time_since_seen / 1000000);
+                    break;
+                }
             }
         }
         
@@ -1754,6 +1772,7 @@ server_select_best_address(struct server *server)
                                      time_since_latency_check / 1000000);
                             break;
                         }
+                    }
                 }
             }
             
