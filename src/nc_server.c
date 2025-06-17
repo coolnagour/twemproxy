@@ -1728,8 +1728,14 @@ server_select_best_address(struct server *server)
                 /* Prioritize any untested server discovered recently (within 2 minutes) */
                 if (time_since_seen < 120000000LL) {
                     untested_server = idx;
-                    log_warn("🚀 AGGRESSIVE: prioritizing untested server addr %"PRIu32" for '%.*s' (latency=%"PRIu32"μs, discovered %"PRId64"s ago)", 
-                             idx, server->pname.len, server->pname.data, 
+                    /* Get the CNAME for this specific address */
+                    const char *cname_str = "unknown";
+                    if (dns->hostnames != NULL && idx < dns->naddresses && dns->hostnames[idx].data != NULL) {
+                        cname_str = (const char *)dns->hostnames[idx].data;
+                    }
+                    
+                    log_warn("🚀 AGGRESSIVE: prioritizing untested CNAME '%s' (addr %"PRIu32") for '%.*s' (latency=%"PRIu32"μs, discovered %"PRId64"s ago)", 
+                             cname_str, idx, server->pname.len, server->pname.data, 
                              dns->latencies[idx], time_since_seen / 1000000);
                     break;
                 }
@@ -1764,8 +1770,14 @@ server_select_best_address(struct server *server)
                     /* If latency hasn't been checked in 5+ minutes, probe this server */
                     if (time_since_latency_check > 300000000LL) { /* 5 minutes */
                         probe_idx = idx;
-                        log_warn("🔄 probing server addr %"PRIu32" for '%.*s' (latency not checked for %"PRId64"s)", 
-                                 idx, server->pname.len, server->pname.data, 
+                        /* Get the CNAME for this specific address */
+                        const char *cname_str = "unknown";
+                        if (dns->hostnames != NULL && idx < dns->naddresses && dns->hostnames[idx].data != NULL) {
+                            cname_str = (const char *)dns->hostnames[idx].data;
+                        }
+                        
+                        log_warn("🔄 probing CNAME '%s' (addr %"PRIu32") for '%.*s' (latency not checked for %"PRId64"s)", 
+                                 cname_str, idx, server->pname.len, server->pname.data, 
                                  time_since_latency_check / 1000000);
                         break;
                     }

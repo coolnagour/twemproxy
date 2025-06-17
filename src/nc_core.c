@@ -385,8 +385,17 @@ core_dns_maintenance(struct context *ctx)
                     if (conn->connect_start_ts > 0 && 
                         (now - conn->connect_start_ts) > pool->connection_max_lifetime) {
                         
-                        log_warn("⏰ CONNECTION LIFETIME EXPIRED: Closing connection to '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
-                                 server->pname.len, server->pname.data,
+                        /* Get the CNAME for the specific address this connection is using */
+                        const char *cname_str = "unknown";
+                        if (server->is_dynamic && server->dns != NULL && 
+                            server->dns->hostnames != NULL && 
+                            conn->addr_idx < server->dns->naddresses && 
+                            server->dns->hostnames[conn->addr_idx].data != NULL) {
+                            cname_str = (const char *)server->dns->hostnames[conn->addr_idx].data;
+                        }
+                        
+                        log_warn("⏰ CONNECTION LIFETIME EXPIRED: Closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
+                                 cname_str, conn->addr_idx, server->pname.len, server->pname.data,
                                  (now - conn->connect_start_ts) / 1000000,
                                  pool->connection_max_lifetime / 1000000);
                         

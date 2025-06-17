@@ -20,7 +20,7 @@ services:
       DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every x seconds
       
       # Connection management  
-      SERVER_CONNECTIONS: "6"             # Allow multiple connections per server for load balancing
+      SERVER_CONNECTIONS: "3"             # Allow multiple connections per server for load balancing
       CONNECTION_MAX_LIFETIME: "60"       # Close connections after x seconds to trigger server re-selection, lower improves load balancing
       DYNAMIC_SERVER_CONNECTIONS: "true"  # Auto-scale connections based on DNS address count
       MAX_SERVER_CONNECTIONS: "8"         # Maximum connections limit for dynamic scaling
