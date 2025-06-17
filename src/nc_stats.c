@@ -1642,6 +1642,7 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
     
     /* Find the server object by name */
+    log_warn("📊 STATS CALL DEBUG: Looking for server '%.*s'", server_name->len, server_name->data);
     server = NULL;
     npool = array_n(&st->owner->pool);
     
@@ -1663,6 +1664,17 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     }
     
     /* If server not found or not dynamic, add empty object */
+    if (server == NULL) {
+        log_warn("📊 STATS CALL DEBUG: Server not found!");
+    } else if (!server->is_dynamic) {
+        log_warn("📊 STATS CALL DEBUG: Server found but not dynamic");
+    } else if (server->dns == NULL) {
+        log_warn("📊 STATS CALL DEBUG: Server found but DNS is NULL");
+    } else {
+        log_warn("📊 STATS CALL DEBUG: Server found, calling server_get_read_hosts_info with %"PRIu32" addresses", 
+                 server->dns->naddresses);
+    }
+    
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
@@ -1676,8 +1688,10 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     }
     
     /* Get DNS host information */
+    log_warn("📊 STATS CALL DEBUG: About to call server_get_read_hosts_info...");
     status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
     if (status != NC_OK) {
+        log_warn("📊 STATS CALL DEBUG: server_get_read_hosts_info FAILED with status %d", status);
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
@@ -1688,6 +1702,8 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         buf->len += (size_t)n;
         return NC_OK;
     }
+    
+    log_warn("📊 STATS CALL DEBUG: server_get_read_hosts_info SUCCESS! Adding to stats buffer...");
     
     /* Add the DNS hosts information to stats */
     {
