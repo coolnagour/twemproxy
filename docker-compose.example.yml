@@ -16,7 +16,7 @@ services:
       # Zone-aware routing configuration
       ZONE_WEIGHT: "95"                    # % traffic to same-AZ
       DNS_RESOLVE_INTERVAL: "10"           # DNS refresh every x seconds
-      DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for x minutes after not seen in DNS
+      DNS_EXPIRATION_MINUTES: "15"         # Keep IPs for x minutes after not seen in DNS. Elasticache will round robin the DNS for read only endpoint in a strage way, so keep this high enough
       DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every x seconds
       
       # Connection management  
