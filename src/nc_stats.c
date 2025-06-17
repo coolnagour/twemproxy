@@ -505,6 +505,9 @@ stats_create_buf(struct stats *st)
         }
     }
 
+    /* Add extra buffer space for DNS host information - conservative estimate for dynamic DNS servers */
+    size += 10240; /* 10KB extra buffer for DNS host JSON data */
+
     /* footer */
     size += 2;
 
@@ -1720,10 +1723,16 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
             char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
             size_t content_len = strlen(content_start);
             
-            log_warn("📊 BUFFER DEBUG: Trying to add %zu bytes to stats buffer with %zu room", 
-                     content_len + 15, room); /* 15 = length of "dns_hosts": + , + space */
+            size_t format_overhead = 12 + 2; /* "dns_hosts": + ", " */
+            size_t total_needed = content_len + format_overhead;
+            
+            log_warn("📊 BUFFER DEBUG: Trying to add %zu bytes to stats buffer with %zu room (content=%zu + overhead=%zu)", 
+                     total_needed, room, content_len, format_overhead);
+            
+            log_warn("📊 CONTENT DEBUG: First 100 chars of content_start: '%.100s'", content_start);
             
             int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
+            log_warn("📊 SNPRINTF DEBUG: nc_snprintf returned %d", n);
             if (n < 0 || n >= (int)room) {
                 log_warn("🚨 MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
                 return NC_ERROR;
