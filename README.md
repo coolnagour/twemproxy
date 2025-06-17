@@ -116,6 +116,8 @@ redis-cli -p 6379 ping  # Write pool
 | `CONNECTION_POOLING` | `true` | Enable connection pooling (`true`/`false`) |
 | `CONNECTION_WARMING` | `1` | Number of connections to pre-warm |
 | `SERVER_CONNECTIONS` | `1` | Maximum connections per server |
+| `DYNAMIC_SERVER_CONNECTIONS` | `false` | Auto-scale connections based on DNS addresses |
+| `MAX_SERVER_CONNECTIONS` | `10` | Maximum limit for dynamic connection scaling |
 
 ### Docker Build and Run
 
@@ -752,7 +754,7 @@ If you are deploying twemproxy in production, you might consider reading through
 
 ## docker hub deployment
 ```
-TAG=2.0.24
+TAG=2.0.25
 docker build -t twemproxy-enhanced .
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:$TAG
 docker push bobbymaher/twemproxy:$TAG

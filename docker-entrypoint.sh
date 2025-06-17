@@ -11,6 +11,8 @@ DNS_HEALTH_CHECK_INTERVAL=${DNS_HEALTH_CHECK_INTERVAL:-"30"}
 CONNECTION_POOLING=${CONNECTION_POOLING:-"true"}
 CONNECTION_WARMING=${CONNECTION_WARMING:-"1"}
 SERVER_CONNECTIONS=${SERVER_CONNECTIONS:-"1"}
+DYNAMIC_SERVER_CONNECTIONS=${DYNAMIC_SERVER_CONNECTIONS:-"false"}
+MAX_SERVER_CONNECTIONS=${MAX_SERVER_CONNECTIONS:-"10"}
 
 # Create configuration from template (running as root)
 echo "Creating configuration as $(whoami)..."
@@ -19,6 +21,8 @@ echo "Environment variables:"
 echo "  ZONE_WEIGHT: $ZONE_WEIGHT"
 echo "  SERVER_CONNECTIONS: $SERVER_CONNECTIONS"
 echo "  CONNECTION_POOLING: $CONNECTION_POOLING"
+echo "  DYNAMIC_SERVER_CONNECTIONS: $DYNAMIC_SERVER_CONNECTIONS"
+echo "  MAX_SERVER_CONNECTIONS: $MAX_SERVER_CONNECTIONS"
 
 # Ensure directory exists and is writable
 mkdir -p /etc/twemproxy
@@ -69,6 +73,10 @@ pools:
         # Connection pooling for efficiency
         connection_pooling: ${CONNECTION_POOLING}
         connection_warming: ${CONNECTION_WARMING}
+        
+        # Dynamic server connections
+        dynamic_server_connections: ${DYNAMIC_SERVER_CONNECTIONS}
+        max_server_connections: ${MAX_SERVER_CONNECTIONS}
 
         servers:
             - ${READ_HOST}:1

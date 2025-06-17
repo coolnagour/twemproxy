@@ -170,6 +170,14 @@ static struct command conf_pool_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, dns_health_check_interval) },
 
+    { string("dynamic_server_connections"),
+      conf_set_bool,
+      offsetof(struct conf_pool, dynamic_server_connections) },
+
+    { string("max_server_connections"),
+      conf_set_num,
+      offsetof(struct conf_pool, max_server_connections) },
+
     null_command
 };
 
@@ -346,6 +354,8 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->dns_cache_negative_ttl = CONF_UNSET_NUM;
     cp->dns_expiration_minutes = CONF_UNSET_NUM;
     cp->dns_health_check_interval = CONF_UNSET_NUM;
+    cp->dynamic_server_connections = CONF_UNSET_NUM;
+    cp->max_server_connections = CONF_UNSET_NUM;
 
     array_null(&cp->server);
 
@@ -468,6 +478,9 @@ conf_pool_each_transform(void *elem, void *data)
     sp->dns_cache_negative_ttl = (int64_t)cp->dns_cache_negative_ttl * 1000000LL; /* convert to microseconds */
     sp->dns_expiration_minutes = (int64_t)cp->dns_expiration_minutes * 60000000LL; /* convert to microseconds */
     sp->dns_health_check_interval = (int64_t)cp->dns_health_check_interval * 1000000LL; /* convert to microseconds */
+    sp->dynamic_server_connections = cp->dynamic_server_connections ? 1 : 0;
+    sp->max_server_connections = (uint32_t)cp->max_server_connections;
+    sp->current_server_connections = sp->server_connections; /* initialize with configured value */
 
     status = server_init(&sp->server, &cp->server, sp);
     if (status != NC_OK) {
@@ -1667,6 +1680,17 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
 
     if (cp->dns_health_check_interval == CONF_UNSET_NUM) {
         cp->dns_health_check_interval = CONF_DEFAULT_DNS_HEALTH_CHECK_INTERVAL;
+    }
+
+    if (cp->dynamic_server_connections == CONF_UNSET_NUM) {
+        cp->dynamic_server_connections = CONF_DEFAULT_DYNAMIC_SERVER_CONNECTIONS;
+    }
+
+    if (cp->max_server_connections == CONF_UNSET_NUM) {
+        cp->max_server_connections = CONF_DEFAULT_MAX_SERVER_CONNECTIONS;
+    } else if (cp->max_server_connections <= 0) {
+        log_error("conf: directive \"max_server_connections:\" must be > 0");
+        return NC_ERROR;
     }
 
     if (!cp->redis && cp->redis_auth.len > 0) {

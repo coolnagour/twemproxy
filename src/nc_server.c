@@ -1247,6 +1247,9 @@ server_dns_resolve(struct server *server)
         dns->addresses = new_addresses;
         dns->naddresses = new_naddresses;
         
+        /* Update dynamic server connections after initial DNS resolution */
+        server_update_dynamic_connections(server);
+        
         /* Allocate tracking arrays */
         dns->latencies = nc_alloc(dns->naddresses * sizeof(uint32_t));
         dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
@@ -1402,6 +1405,9 @@ server_dns_resolve(struct server *server)
             }
             
             dns->naddresses++;
+            
+            /* Update dynamic server connections after adding new address */
+            server_update_dynamic_connections(server);
             
             char addr_str[INET6_ADDRSTRLEN];
             struct sockaddr *addr = (struct sockaddr *)&new_addresses[i].addr;
@@ -1825,6 +1831,45 @@ server_select_best_address(struct server *server)
     return best_idx;
 }
 
+static void
+server_update_dynamic_connections(struct server *server)
+{
+    struct server_pool *pool;
+    struct server_dns *dns;
+    
+    if (server == NULL || !server->is_dynamic) {
+        return;
+    }
+    
+    pool = server->owner;
+    dns = server->dns;
+    
+    if (pool == NULL || dns == NULL || !pool->dynamic_server_connections) {
+        return;
+    }
+    
+    /* Calculate optimal connections: min(dns_addresses, max_server_connections) */
+    uint32_t optimal_connections = dns->naddresses;
+    if (optimal_connections > pool->max_server_connections) {
+        optimal_connections = pool->max_server_connections;
+    }
+    
+    /* Ensure at least 1 connection */
+    if (optimal_connections < 1) {
+        optimal_connections = 1;
+    }
+    
+    /* Update current_server_connections if it changed */
+    if (pool->current_server_connections != optimal_connections) {
+        uint32_t old_connections = pool->current_server_connections;
+        pool->current_server_connections = optimal_connections;
+        
+        log_warn("📈 dynamic server_connections updated for '%.*s': %"PRIu32" → %"PRIu32" (dns_addresses: %"PRIu32")",
+                 server->pname.len, server->pname.data, 
+                 old_connections, optimal_connections, dns->naddresses);
+    }
+}
+
 rstatus_t
 server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency)
 {
@@ -1930,6 +1975,9 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         "    \"zones_detected\": %"PRIu32",\n"
         "    \"same_zone_servers\": %"PRIu32",\n"
         "    \"cross_zone_servers\": %"PRIu32",\n"
+        "    \"current_server_connections\": %"PRIu32",\n"
+        "    \"max_server_connections\": %"PRIu32",\n"
+        "    \"dynamic_server_connections\": %s,\n"
         "    \"address_details\": [\n",
         dns->hostname.len, dns->hostname.data,
         dns->resolve_interval / 1000000, /* convert to seconds */
@@ -1940,7 +1988,10 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         pool->zone_weight,
         zones_detected,
         same_zone_count,
-        cross_zone_count);
+        cross_zone_count,
+        pool->current_server_connections,
+        pool->max_server_connections,
+        pool->dynamic_server_connections ? "true" : "false");
     
     if (written >= buffer_size) return NC_ERROR;
     
