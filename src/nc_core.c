@@ -415,8 +415,38 @@ core_dns_maintenance(struct context *ctx)
                 if (server_should_resolve_dns(server)) {
                     rstatus_t status = server_dns_check_update(server);
                     if (status == NC_OK) {
-                        log_warn("🔄 periodic DNS update successful for '%.*s'",
-                                  server->pname.len, server->pname.data);
+                        /* Show discovered CNAMEs in the log */
+                        struct server_dns *dns = server->dns;
+                        if (dns != NULL && dns->naddresses > 0) {
+                            log_warn("🔄 periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
+                                      server->pname.len, server->pname.data, dns->naddresses);
+                            uint32_t k;
+                            for (k = 0; k < dns->naddresses; k++) {
+                                char addr_str[INET6_ADDRSTRLEN];
+                                const char *cname_str = "unknown";
+                                
+                                /* Convert IP to string */
+                                if (dns->addresses[k].family == AF_INET) {
+                                    struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addresses[k].addr;
+                                    inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
+                                } else if (dns->addresses[k].family == AF_INET6) {
+                                    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&dns->addresses[k].addr;
+                                    inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
+                                } else {
+                                    snprintf(addr_str, sizeof(addr_str), "unknown");
+                                }
+                                
+                                /* Get CNAME if available */
+                                if (dns->hostnames != NULL && k < dns->naddresses && dns->hostnames[k].data != NULL) {
+                                    cname_str = (const char *)dns->hostnames[k].data;
+                                }
+                                
+                                log_warn("   → addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);
+                            }
+                        } else {
+                            log_warn("🔄 periodic DNS update successful for '%.*s' (no addresses found)",
+                                      server->pname.len, server->pname.data);
+                        }
                     } else {
                         log_warn("⚠️  periodic DNS update failed for '%.*s'",
                                   server->pname.len, server->pname.data);
