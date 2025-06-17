@@ -2178,14 +2178,16 @@ server_detect_zones_by_latency(struct server *server)
     /* Use 15% of range above minimum, but cap at reasonable values */
     low_latency_threshold = min_latency + (latency_range / 6); /* 15% above minimum */
     
-    /* Dynamic minimum threshold based on absolute latency values */
+    /* Much more sensitive thresholds for AWS cross-AZ detection */
     uint32_t min_threshold;
-    if (min_latency < 1000) {
-        min_threshold = min_latency + 500; /* 0.5ms for very low latency */
+    if (min_latency < 500) {
+        min_threshold = min_latency + 50; /* 50μs for very low latency */
+    } else if (min_latency < 1000) {
+        min_threshold = min_latency + 100; /* 100μs for sub-millisecond */
     } else if (min_latency < 5000) {
-        min_threshold = min_latency + 1000; /* 1ms for low latency */ 
+        min_threshold = min_latency + 200; /* 200μs for low latency */ 
     } else {
-        min_threshold = min_latency + 2000; /* 2ms for higher latency */
+        min_threshold = min_latency + 1000; /* 1ms for higher latency */
     }
     
     if (low_latency_threshold < min_threshold) {
