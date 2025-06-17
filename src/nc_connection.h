@@ -91,6 +91,7 @@ struct conn {
     unsigned            authenticated:1; /* authenticated? */
     
     int64_t             connect_start_ts; /* connection start timestamp (usec) */
+    uint32_t            addr_idx;        /* address index being used for this connection */
 };
 
 TAILQ_HEAD(conn_tqh, conn);

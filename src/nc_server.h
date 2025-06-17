@@ -78,6 +78,7 @@ struct server_dns {
     int64_t            *last_latency_check; /* Last latency measurement */
     uint32_t           *failure_counts;   /* Failure count per address */
     int64_t            *last_seen;         /* Last time each address was returned by DNS */
+    int64_t            *last_used;         /* Last time each address was used for connection */
     struct string      *hostnames;        /* Canonical hostname for each address (reverse DNS) */
     
     /* Enhanced health monitoring */

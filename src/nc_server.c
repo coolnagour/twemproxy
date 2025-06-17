@@ -42,6 +42,7 @@ server_resolve(struct server *server, struct conn *conn)
         if (best_idx < server->dns->naddresses) {
             server->current_addr_idx = best_idx;
             server->info = server->dns->addresses[best_idx];
+            conn->addr_idx = best_idx;  /* Track which address this connection uses */
         }
     } else {
         /* Use traditional single-address resolution */
@@ -588,7 +589,7 @@ server_connect(struct context *ctx, struct server *server, struct conn *conn)
     if (server->is_dynamic && server->dns != NULL && conn->connect_start_ts > 0) {
         int64_t latency = nc_usec_now() - conn->connect_start_ts;
         if (latency > 0) {
-            server_measure_latency(server, server->current_addr_idx, latency);
+            server_measure_latency(server, conn->addr_idx, latency);
         }
     }
     
@@ -619,7 +620,7 @@ server_connected(struct context *ctx, struct conn *conn)
     if (server->is_dynamic && server->dns != NULL && conn->connect_start_ts > 0) {
         int64_t latency = nc_usec_now() - conn->connect_start_ts;
         if (latency > 0) {
-            server_measure_latency(server, server->current_addr_idx, latency);
+            server_measure_latency(server, conn->addr_idx, latency);
         }
     }
 
