@@ -390,6 +390,9 @@ core_dns_maintenance(struct context *ctx)
                                  (now - conn->connect_start_ts) / 1000000,
                                  pool->connection_max_lifetime / 1000000);
                         
+                        /* Mark as lifetime expired to avoid counting as failure */
+                        conn->lifetime_expired = 1;
+                        
                         /* Close the expired connection - this will trigger new server selection */
                         core_close(ctx, conn);
                         expired_count++;

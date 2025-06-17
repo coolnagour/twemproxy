@@ -404,7 +404,9 @@ server_close(struct context *ctx, struct conn *conn)
     conn->connected = false;
 
     if (conn->sd < 0) {
-        server_failure(ctx, conn->owner);
+        if (!conn->lifetime_expired) {
+            server_failure(ctx, conn->owner);
+        }
         conn->unref(conn);
         conn_put(conn);
         return;
@@ -497,7 +499,9 @@ server_close(struct context *ctx, struct conn *conn)
 
     ASSERT(conn->smsg == NULL);
 
-    server_failure(ctx, conn->owner);
+    if (!conn->lifetime_expired) {
+        server_failure(ctx, conn->owner);
+    }
 
     conn->unref(conn);
 
@@ -647,6 +651,22 @@ server_ok(struct context *ctx, struct conn *conn)
                   server->failure_count);
         server->failure_count = 0;
         server->next_retry = 0LL;
+    }
+    
+    /* Improve health score for successful operations on dynamic DNS servers */
+    if (server->is_dynamic && server->dns != NULL) {
+        uint32_t addr_idx = conn->addr_idx;
+        if (addr_idx < server->dns->naddresses && server->dns->health_scores != NULL) {
+            /* Gradually improve health score for successful operations */
+            if (server->dns->health_scores[addr_idx] < 90) {
+                server->dns->health_scores[addr_idx] += 5;
+                if (server->dns->health_scores[addr_idx] > 100) {
+                    server->dns->health_scores[addr_idx] = 100;
+                }
+            }
+            /* Reset failure count for this specific address */
+            server->dns->failure_counts[addr_idx] = 0;
+        }
     }
 }
 
@@ -2317,7 +2337,7 @@ server_health_check(struct server *server, uint32_t addr_idx)
     
     /* Reduce score based on failure rate */
     if (failures > 0) {
-        health_score -= (failures * 20); /* -20 points per failure */
+        health_score -= (failures * 20); 
     }
     
     /* Reduce score for high latency (>100ms = unhealthy) */
@@ -2362,7 +2382,7 @@ server_is_healthy(struct server *server, uint32_t addr_idx)
     struct server_pool *pool = server->owner;
     int64_t stale_threshold = pool ? pool->dns_expiration_minutes : (5 * 60000000LL); /* Use config or 5 minutes default */
     
-    /* Consider healthy if health score > 30, failures < limit, and recently seen in DNS */
+     /* Consider healthy if health score > 30, failures < limit, and recently seen in DNS */
     bool is_healthy = (dns->health_scores != NULL && dns->health_scores[addr_idx] > 30) &&
                      (dns->failure_counts[addr_idx] < dns->consecutive_failures_limit) &&
                      (time_since_seen < stale_threshold);

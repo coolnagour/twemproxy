@@ -103,6 +103,8 @@ echo "Starting load test...\n";
 $overall_start = microtime(true);
 $results = [];
 
+while(true){
+
 // Use process forking for true concurrency (if available)
 if (function_exists('pcntl_fork')) {
     echo "Using process forking for concurrent connections...\n";
@@ -178,4 +180,5 @@ if (function_exists('pcntl_fork')) {
 }
 
 echo "\nLoad test completed!\n";
+}
 ?>
