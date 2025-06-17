@@ -423,57 +423,6 @@ core_dns_maintenance(struct context *ctx)
                     }
                 }
                 
-                /* PERIODIC LATENCY PROBING: Probe all servers every 60 seconds for accurate latency */
-                static int64_t last_latency_probe = 0;
-                if ((now - last_latency_probe) >= 60000000LL) { /* 60 seconds */
-                    struct server_dns *dns = server->dns;
-                    if (dns != NULL) {
-                        uint32_t k;
-                        for (k = 0; k < dns->naddresses; k++) {
-                            /* Skip if this address was recently measured (within 30 seconds) */
-                            int64_t time_since_measurement = (now > 0 && dns->last_latency_check[k] > 0) ? 
-                                                            (now - dns->last_latency_check[k]) : LLONG_MAX;
-                            
-                            if (time_since_measurement > 30000000LL) { /* 30 seconds */
-                                log_warn("🔍 LATENCY PROBE: Testing server addr %"PRIu32" for '%.*s' (last measured %"PRId64"s ago)",
-                                         k, server->pname.len, server->pname.data, time_since_measurement / 1000000);
-                                
-                                /* Force a quick connection test to this specific address */
-                                uint32_t old_current = server->current_addr_idx;
-                                server->current_addr_idx = k;
-                                server->info = dns->addresses[k];
-                                
-                                /* Quick connection test */
-                                struct conn *probe_conn = server_conn(server);
-                                if (probe_conn != NULL) {
-                                    /* Set shorter timeout for probing */
-                                    rstatus_t connect_status = server_connect(ctx, server, probe_conn);
-                                    if (connect_status == NC_OK) {
-                                        log_warn("✅ LATENCY PROBE: Successfully measured addr %"PRIu32" for '%.*s'", 
-                                                 k, server->pname.len, server->pname.data);
-                                    } else {
-                                        log_warn("❌ LATENCY PROBE: Failed to measure addr %"PRIu32" for '%.*s'", 
-                                                 k, server->pname.len, server->pname.data);
-                                        /* Mark as high latency for failed probe */
-                                        dns->latencies[k] = 100000; /* 100ms penalty for failed probe */
-                                    }
-                                    /* Close probe connection immediately */
-                                    server_close(ctx, probe_conn);
-                                } else {
-                                    log_warn("❌ LATENCY PROBE: Could not create probe connection for addr %"PRIu32, k);
-                                    dns->latencies[k] = 100000; /* 100ms penalty */
-                                }
-                                
-                                /* Restore original current address */
-                                server->current_addr_idx = old_current;
-                                if (old_current < dns->naddresses) {
-                                    server->info = dns->addresses[old_current];
-                                }
-                            }
-                        }
-                        last_latency_probe = now;
-                    }
-                }
             }
         }
     }

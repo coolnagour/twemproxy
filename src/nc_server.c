@@ -1750,8 +1750,8 @@ server_select_best_address(struct server *server)
         static uint32_t probe_counter = 0;
         probe_counter++;
         
-        /* Every 20th selection (~20-40 seconds with typical traffic), probe a different server */
-        if (probe_counter % 20 == 0 && healthy_count > 1) {
+        /* Every 5th selection (~5-10 seconds with typical traffic), probe a different server */
+        if (probe_counter % 5 == 0 && healthy_count > 1) {
             uint32_t probe_idx = UINT32_MAX;
             int64_t now = nc_usec_now();
             
