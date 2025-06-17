@@ -2170,29 +2170,18 @@ server_detect_zones_by_latency(struct server *server)
     avg_latency = total_latency / healthy_count;
     
     /* 
-     * Auto-detect low latency threshold using more aggressive outlier detection:
-     * Only servers very close to minimum latency are considered "local zone"
+     * Percentage-based zone detection: servers within 10% of minimum latency are "same-az"
+     * This approach scales automatically to any latency environment
      */
+    uint32_t percentage_threshold = min_latency + (min_latency / 10); /* 10% above minimum */
+    
+    /* Fallback to range-based for very small latencies where 10% might be too small */
     uint32_t latency_range = max_latency - min_latency;
+    uint32_t range_threshold = min_latency + (latency_range / 6); /* 15% of range */
     
-    /* Use 15% of range above minimum, but cap at reasonable values */
-    low_latency_threshold = min_latency + (latency_range / 6); /* 15% above minimum */
-    
-    /* Much more sensitive thresholds for AWS cross-AZ detection */
-    uint32_t min_threshold;
-    if (min_latency < 500) {
-        min_threshold = min_latency + 50; /* 50μs for very low latency */
-    } else if (min_latency < 1000) {
-        min_threshold = min_latency + 100; /* 100μs for sub-millisecond */
-    } else if (min_latency < 5000) {
-        min_threshold = min_latency + 200; /* 200μs for low latency */ 
-    } else {
-        min_threshold = min_latency + 1000; /* 1ms for higher latency */
-    }
-    
-    if (low_latency_threshold < min_threshold) {
-        low_latency_threshold = min_threshold;
-    }
+    /* Use the larger of the two thresholds to ensure meaningful separation */
+    low_latency_threshold = (percentage_threshold > range_threshold) ? 
+                           percentage_threshold : range_threshold;
     
     /* Assign zone IDs based on statistical grouping */
     dns->local_zone_id = 1; /* Local zone is always 1 */
