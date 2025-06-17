@@ -1711,12 +1711,21 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
         /* Replace "read_hosts" with "dns_hosts" in the buffer */
+        log_warn("📊 BUFFER DEBUG: Main stats buffer has %zu bytes available, buffer content is %zu bytes", 
+                 room, strlen(buffer));
+        
         char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
         if (read_hosts_pos != NULL) {
             /* Copy everything after "read_hosts": */
             char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
+            size_t content_len = strlen(content_start);
+            
+            log_warn("📊 BUFFER DEBUG: Trying to add %zu bytes to stats buffer with %zu room", 
+                     content_len + 15, room); /* 15 = length of "dns_hosts": + , + space */
+            
             int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
             if (n < 0 || n >= (int)room) {
+                log_warn("🚨 MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
                 return NC_ERROR;
             }
             buf->len += (size_t)n;
