@@ -505,8 +505,8 @@ stats_create_buf(struct stats *st)
         }
     }
 
-    /* Add extra buffer space for DNS host information - conservative estimate for dynamic DNS servers */
-    size += 10240; /* 10KB extra buffer for DNS host JSON data */
+    /* Add extra buffer space for DNS host information - allow for up to 10 servers with 16 addresses each */
+    size += 25600; /* 25KB extra buffer: 10 servers * 16 addresses * 160 bytes per address */
 
     /* footer */
     size += 2;
@@ -1645,7 +1645,6 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
     
     /* Find the server object by name */
-    log_warn("📊 STATS CALL DEBUG: Looking for server '%.*s'", server_name->len, server_name->data);
     server = NULL;
     npool = array_n(&st->owner->pool);
     
@@ -1668,14 +1667,9 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     
     /* If server not found or not dynamic, add empty object */
     if (server == NULL) {
-        log_warn("📊 STATS CALL DEBUG: Server not found!");
     } else if (!server->is_dynamic) {
-        log_warn("📊 STATS CALL DEBUG: Server found but not dynamic");
     } else if (server->dns == NULL) {
-        log_warn("📊 STATS CALL DEBUG: Server found but DNS is NULL");
     } else {
-        log_warn("📊 STATS CALL DEBUG: Server found, calling server_get_read_hosts_info with %"PRIu32" addresses", 
-                 server->dns->naddresses);
     }
     
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
@@ -1691,10 +1685,8 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     }
     
     /* Get DNS host information */
-    log_warn("📊 STATS CALL DEBUG: About to call server_get_read_hosts_info...");
     status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
     if (status != NC_OK) {
-        log_warn("📊 STATS CALL DEBUG: server_get_read_hosts_info FAILED with status %d", status);
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
@@ -1706,7 +1698,6 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         return NC_OK;
     }
     
-    log_warn("📊 STATS CALL DEBUG: server_get_read_hosts_info SUCCESS! Adding to stats buffer...");
     
     /* Add the DNS hosts information to stats */
     {
@@ -1714,8 +1705,6 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
         /* Replace "read_hosts" with "dns_hosts" in the buffer */
-        log_warn("📊 BUFFER DEBUG: Main stats buffer has %zu bytes available, buffer content is %zu bytes", 
-                 room, strlen(buffer));
         
         char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
         if (read_hosts_pos != NULL) {
@@ -1726,13 +1715,9 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
             size_t format_overhead = 12 + 2; /* "dns_hosts": + ", " */
             size_t total_needed = content_len + format_overhead;
             
-            log_warn("📊 BUFFER DEBUG: Trying to add %zu bytes to stats buffer with %zu room (content=%zu + overhead=%zu)", 
-                     total_needed, room, content_len, format_overhead);
             
-            log_warn("📊 CONTENT DEBUG: First 100 chars of content_start: '%.100s'", content_start);
             
             int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
-            log_warn("📊 SNPRINTF DEBUG: nc_snprintf returned %d", n);
             if (n < 0 || n >= (int)room) {
                 log_warn("🚨 MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
                 return NC_ERROR;

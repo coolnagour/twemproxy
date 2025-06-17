@@ -2040,20 +2040,15 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         pool->dynamic_server_connections ? "true" : "false");
     
 
-    log_warn("📊 STATS DEBUG: Starting stats generation for hostname '%.*s' with %"PRIu32" addresses", 
-             dns->hostname.len, dns->hostname.data, dns->naddresses);
 
     if (written >= buffer_size) {
         log_warn("🚨 BUFFER OVERFLOW: Stats buffer too small! written=%zu, buffer_size=%zu", written, buffer_size);
         return NC_ERROR;
     }
     
-    log_warn("📊 STATS DEBUG: About to generate address details for %"PRIu32" addresses (buffer: %zu/%zu bytes used)", 
-             dns->naddresses, written, buffer_size);
     
     /* Add details for each address */
     for (i = 0; i < dns->naddresses; i++) {
-        log_warn("📊 STATS DEBUG: Processing address %"PRIu32"/%"PRIu32, i + 1, dns->naddresses);
         char addr_str[INET6_ADDRSTRLEN];
         struct sockaddr *addr = (struct sockaddr *)&dns->addresses[i].addr;
         size_t addr_written;
@@ -2117,8 +2112,6 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         
         written += addr_written;
         
-        log_warn("📊 STATS DEBUG: Address %"PRIu32" (%s) added %zu bytes, total: %zu/%zu bytes", 
-                 i, addr_str, addr_written, written, buffer_size);
         
         if (written >= buffer_size) {
             log_warn("🚨 BUFFER OVERFLOW: After address %"PRIu32", buffer exceeded! written=%zu, buffer_size=%zu", 
@@ -2133,8 +2126,6 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "  }");
         written += final_written;
         
-        log_warn("📊 STATS DEBUG: Final stats generation complete. Total: %zu/%zu bytes used", 
-                 written, buffer_size);
     }
     
     if (written >= buffer_size) {
@@ -2143,7 +2134,6 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         return NC_ERROR;
     }
     
-    log_warn("📊 STATS DEBUG: Successfully generated stats for %"PRIu32" addresses", dns->naddresses);
     return NC_OK;
 }
 
