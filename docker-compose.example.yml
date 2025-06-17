@@ -10,8 +10,8 @@ services:
       - "22222:22222" # Stats port
     environment:
       # Redis server hostnames (can be DNS names for dynamic resolution)
-      READ_HOST: "staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
-      WRITE_HOST: "staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
+      WRITE_HOST: "load-testing.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
+      READ_HOST: "load-testing-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
 
       # Zone-aware routing configuration
       ZONE_WEIGHT: "95"                    # % traffic to same-AZ
