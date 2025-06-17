@@ -24,6 +24,9 @@
 #include <nc_conf.h>
 #include <nc_client.h>
 
+/* Forward declarations */
+static void server_update_dynamic_connections(struct server *server);
+
 static void
 server_resolve(struct server *server, struct conn *conn)
 {

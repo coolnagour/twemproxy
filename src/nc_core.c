@@ -363,10 +363,45 @@ core_dns_maintenance(struct context *ctx)
     
     last_dns_check = now;
     
-    /* Check all server pools for dynamic DNS servers */
+    /* Check all server pools for dynamic DNS servers and connection lifetimes */
     npool = array_n(&ctx->pool);
     for (i = 0; i < npool; i++) {
         struct server_pool *pool = array_get(&ctx->pool, i);
+        
+        /* Check for expired connections if max lifetime is configured */
+        if (pool->connection_max_lifetime > 0) {
+            struct conn *conn, *nconn;
+            uint32_t expired_count = 0;
+            
+            /* Check server connections for max lifetime expiration */
+            nserver = array_n(&pool->server);
+            for (j = 0; j < nserver; j++) {
+                struct server *server = array_get(&pool->server, j);
+                
+                for (conn = TAILQ_FIRST(&server->s_conn_q); conn != NULL; conn = nconn) {
+                    nconn = TAILQ_NEXT(conn, conn_tqe);
+                    
+                    /* Check if connection has exceeded max lifetime */
+                    if (conn->connect_start_ts > 0 && 
+                        (now - conn->connect_start_ts) > pool->connection_max_lifetime) {
+                        
+                        log_warn("⏰ CONNECTION LIFETIME EXPIRED: Closing connection to '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
+                                 server->pname.len, server->pname.data,
+                                 (now - conn->connect_start_ts) / 1000000,
+                                 pool->connection_max_lifetime / 1000000);
+                        
+                        /* Close the expired connection - this will trigger new server selection */
+                        core_close(ctx, conn);
+                        expired_count++;
+                    }
+                }
+            }
+            
+            if (expired_count > 0) {
+                log_warn("🔄 LIFETIME CHECK: Closed %"PRIu32" expired connections in pool '%.*s' - new connections will trigger server re-selection",
+                         expired_count, pool->name.len, pool->name.data);
+            }
+        }
         
         nserver = array_n(&pool->server);
         for (j = 0; j < nserver; j++) {

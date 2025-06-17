@@ -146,6 +146,10 @@ static struct command conf_pool_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, connection_idle_timeout) },
 
+    { string("connection_max_lifetime"),
+      conf_set_num,
+      offsetof(struct conf_pool, connection_max_lifetime) },
+
     { string("tls_enabled"),
       conf_set_bool,
       offsetof(struct conf_pool, tls_enabled) },
@@ -348,6 +352,7 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->connection_pooling = CONF_UNSET_NUM;
     cp->connection_warming = CONF_UNSET_NUM;
     cp->connection_idle_timeout = CONF_UNSET_NUM;
+    cp->connection_max_lifetime = CONF_UNSET_NUM;
     cp->tls_enabled = CONF_UNSET_NUM;
     cp->tls_verify_peer = CONF_UNSET_NUM;
     cp->dns_failure_threshold = CONF_UNSET_NUM;
@@ -472,6 +477,7 @@ conf_pool_each_transform(void *elem, void *data)
     sp->connection_pooling = cp->connection_pooling ? 1 : 0;
     sp->connection_warming = (uint32_t)cp->connection_warming;
     sp->connection_idle_timeout = (int64_t)cp->connection_idle_timeout * 1000000LL; /* convert to microseconds */
+    sp->connection_max_lifetime = (int64_t)cp->connection_max_lifetime * 1000000LL; /* convert to microseconds */
     sp->tls_enabled = cp->tls_enabled ? 1 : 0;
     sp->tls_verify_peer = cp->tls_verify_peer ? 1 : 0;
     sp->dns_failure_threshold = (uint32_t)cp->dns_failure_threshold;
@@ -1656,6 +1662,10 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
 
     if (cp->connection_idle_timeout == CONF_UNSET_NUM) {
         cp->connection_idle_timeout = CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT;
+    }
+
+    if (cp->connection_max_lifetime == CONF_UNSET_NUM) {
+        cp->connection_max_lifetime = CONF_DEFAULT_CONNECTION_MAX_LIFETIME;
     }
 
     if (cp->tls_enabled == CONF_UNSET_NUM) {

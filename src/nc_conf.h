@@ -70,6 +70,7 @@
 #define CONF_DEFAULT_CONNECTION_POOLING      false
 #define CONF_DEFAULT_CONNECTION_WARMING      0
 #define CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT 300        /* in seconds */
+#define CONF_DEFAULT_CONNECTION_MAX_LIFETIME 900        /* in seconds (15 minutes) */
 #define CONF_DEFAULT_TLS_ENABLED             false
 #define CONF_DEFAULT_TLS_VERIFY_PEER         true
 #define CONF_DEFAULT_DNS_FAILURE_THRESHOLD   3
@@ -126,6 +127,7 @@ struct conf_pool {
     int                connection_pooling;    /* connection_pooling: enable connection pooling */
     int                connection_warming;    /* connection_warming: pre-warm connections count */
     int                connection_idle_timeout; /* connection_idle_timeout: idle timeout in seconds */
+    int                connection_max_lifetime; /* connection_max_lifetime: max lifetime in seconds */
     int                tls_enabled;           /* tls_enabled: enable TLS */
     int                tls_verify_peer;       /* tls_verify_peer: verify TLS peer certificates */
     int                dns_failure_threshold; /* dns_failure_threshold: failures before unhealthy */

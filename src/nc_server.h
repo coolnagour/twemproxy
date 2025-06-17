@@ -165,6 +165,7 @@ struct server_pool {
     unsigned           connection_pooling:1; /* enable connection pooling? */
     uint32_t           connection_warming;   /* pre-warm connections count */
     int64_t            connection_idle_timeout; /* close idle connections (usec) */
+    int64_t            connection_max_lifetime; /* force close connections after max lifetime (usec) */
     
     /* Dynamic connection scaling */
     unsigned           dynamic_server_connections:1; /* enable dynamic server_connections scaling? */

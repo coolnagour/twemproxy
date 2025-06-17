@@ -13,6 +13,7 @@ CONNECTION_WARMING=${CONNECTION_WARMING:-"1"}
 SERVER_CONNECTIONS=${SERVER_CONNECTIONS:-"1"}
 DYNAMIC_SERVER_CONNECTIONS=${DYNAMIC_SERVER_CONNECTIONS:-"false"}
 MAX_SERVER_CONNECTIONS=${MAX_SERVER_CONNECTIONS:-"10"}
+CONNECTION_MAX_LIFETIME=${CONNECTION_MAX_LIFETIME:-"300"}
 
 # Create configuration from template (running as root)
 echo "Creating configuration as $(whoami)..."
@@ -23,6 +24,7 @@ echo "  SERVER_CONNECTIONS: $SERVER_CONNECTIONS"
 echo "  CONNECTION_POOLING: $CONNECTION_POOLING"
 echo "  DYNAMIC_SERVER_CONNECTIONS: $DYNAMIC_SERVER_CONNECTIONS"
 echo "  MAX_SERVER_CONNECTIONS: $MAX_SERVER_CONNECTIONS"
+echo "  CONNECTION_MAX_LIFETIME: $CONNECTION_MAX_LIFETIME"
 
 # Ensure directory exists and is writable
 mkdir -p /etc/twemproxy
@@ -73,6 +75,7 @@ pools:
         # Connection pooling for efficiency
         connection_pooling: ${CONNECTION_POOLING}
         connection_warming: ${CONNECTION_WARMING}
+        connection_max_lifetime: ${CONNECTION_MAX_LIFETIME}
         
         # Dynamic server connections
         dynamic_server_connections: ${DYNAMIC_SERVER_CONNECTIONS}
