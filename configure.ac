@@ -1,7 +1,7 @@
 # Define the package version numbers and the bug reporting address
 m4_define([NC_MAJOR], 2)
 m4_define([NC_MINOR], 0)
-m4_define([NC_PATCH], 39)
+m4_define([NC_PATCH], 40)
 m4_define([NC_BUGS], [na@nobody.com])
 
 # Initialize autoconf
