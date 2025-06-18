@@ -1259,6 +1259,20 @@ server_dns_resolve(struct server *server)
         }
         log_error("failed to resolve '%.*s': %s", 
                   dns->hostname.len, dns->hostname.data, strerror(errno));
+        
+        /* Clean up allocated memory on error */
+        if (new_addresses) {
+            nc_free(new_addresses);
+        }
+        if (new_hostnames != NULL) {
+            for (uint32_t i = 0; i < new_naddresses; i++) {
+                if (new_hostnames[i] != NULL) {
+                    nc_free(new_hostnames[i]);
+                }
+            }
+            nc_free(new_hostnames);
+        }
+        
         return status;
     }
     
@@ -1274,10 +1288,10 @@ server_dns_resolve(struct server *server)
         server_update_dynamic_connections(server);
         
         /* Validate address count before allocation to prevent excessive memory usage */
-        if (dns->naddresses > 1000) { /* Reasonable limit for DNS addresses */
-            log_error("DNS returned excessive address count %"PRIu32" for '%.*s', limiting to 1000",
+        if (dns->naddresses > 16) { /* Reasonable limit for DNS addresses */
+            log_error("DNS returned excessive address count %"PRIu32" for '%.*s', limiting to 16",
                       dns->naddresses, server->pname.len, server->pname.data);
-            dns->naddresses = 1000;
+            dns->naddresses = 16;
         }
         
         /* Allocate tracking arrays */
@@ -1308,8 +1322,30 @@ server_dns_resolve(struct server *server)
             string_init(&dns->hostnames[i]);
             if (new_hostnames != NULL && new_hostnames[i] != NULL) {
                 char *canonical_name = new_hostnames[i];
-                string_copy(&dns->hostnames[i], canonical_name, strlen(canonical_name));
-                log_warn("captured canonical hostname for addr %"PRIu32": %s", i, canonical_name);
+                
+                /* Validate hostname for security */
+                size_t name_len = strlen(canonical_name);
+                if (name_len > 255 || name_len == 0) {
+                    log_warn("Invalid hostname length %zu for addr %"PRIu32", using default", name_len, i);
+                    string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
+                } else {
+                    bool valid = true;
+                    for (size_t j = 0; j < name_len; j++) {
+                        char c = canonical_name[j];
+                        if (!isalnum(c) && c != '-' && c != '.' && c != '_') {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    
+                    if (valid) {
+                        string_copy(&dns->hostnames[i], canonical_name, name_len);
+                        log_warn("captured canonical hostname for addr %"PRIu32": %s", i, canonical_name);
+                    } else {
+                        log_warn("Invalid hostname characters for addr %"PRIu32", using default", i);
+                        string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
+                    }
+                }
             } else {
                 string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
                 log_warn("no canonical name for addr %"PRIu32", using original: %.*s", 

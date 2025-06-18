@@ -1,61 +1,104 @@
 # twemproxy (nutcracker) - Enhanced with Zone-Aware Routing
 
 ## 🚀 What's Different from Original Twemproxy?
+# twemproxy (nutcracker) - Enhanced with Zone-Aware Routing
+
+## 🚀 What's Different from Original Twemproxy?
 
 This enhanced version adds **automatic zone-aware routing** for Redis caching, optimized specifically for cloud environments like AWS, GCP, and Azure. It automatically routes most traffic to same-availability-zone servers to reduce costs and latency.
 
 ### ✨ Key Features:
 - **🌍 Automatic Zone Detection**: Intelligently groups servers by latency patterns (no manual configuration needed)
-- **💰 Cost Optimization**: Routes most traffic to same-AZ servers to minimize cross-zone data transfer costs
+- **💰 Cost Optimization**: Routes most traffic to same-AZ servers to minimize cross-zone data transfer costs (configurable percentage)
 - **🔄 Dynamic DNS Resolution**: Automatically discovers new/removed Redis servers without restarts
 - **📊 Real-time Latency Measurement**: Continuously measures connection latency for intelligent routing
 - **🛡️ Automatic Failover**: Seamlessly handles server failures and DNS changes
-- **⚙️ Cache Optimized**: Built specifically for Redis/cache services (not databases)
 
----
+see git repo for up to date readme https://github.com/coolnagour/twemproxy
 
-## Quick Start
 
-### Basic Same-AZ Configuration
+```
+version: '3.3'
 
-```yaml
-global:
-    worker_processes: auto
-    user: nobody
-    group: nobody
+services:
+  # Twemproxy with zone-aware routing
+  twemproxy:
+    image: bobbymaher/twemproxy:2.0.47
+    ports:
+      - "6378:6378"  # Redis read port
+      - "6379:6379"  # Redis write port
+      - "22222:22222" # Stats port
+    environment:
+      # Redis server hostnames (can be DNS names for dynamic resolution)
+      READ_HOST: "redis-ro.cc.ng.0001.euw1.cache.amazonaws.com:6379"
+      WRITE_HOST: "redis.cc.ng.0001.euw1.cache.amazonaws.com:6379"
 
-pools:
-    # Write pool (single primary)
-    write:
-        listen: 127.0.0.1:6379
-        redis: true
-        auto_eject_hosts: true
-        timeout: 2000
-        server_retry_timeout: 1000
-        server_failure_limit: 5
-        servers:
-            - my-redis-primary.cache.amazonaws.com:6379:1
+      # Zone-aware routing configuration
+      ZONE_WEIGHT: "95"                    # 95% traffic to same-AZ
+      DNS_RESOLVE_INTERVAL: "30"           # DNS refresh every 30 seconds
+      DNS_EXPIRATION_MINUTES: "5"         # Keep IPs for 5 minutes after not seen in DNS
+      DNS_HEALTH_CHECK_INTERVAL: "30"     # Health check every 30 seconds
+    volumes:
+      - ./logs:/var/log/twemproxy #you should logrotate this 
+    networks:
+      - redis-network
+    restart: unless-stopped
 
-    # Read pool with zone-aware routing
-    read:
-        listen: 127.0.0.1:6378
-        redis: true
-        auto_eject_hosts: true
-        timeout: 2000
-        server_retry_timeout: 10000
-        server_failure_limit: 1
 
-        # Zone-aware routing - sends 99% traffic to same-AZ
-        zone_aware: true
-        zone_weight: 99             # 99% preference for same-AZ servers
-        dns_resolve_interval: 30    # Re-check DNS every 30 seconds
-        dns_expiration_minutes: 5   # Expire addresses after 5 minutes of not appearing in DNS (AWS DNS lookups to the readonly endpoint gives different responses, rotating each node on each response)
+networks:
+  redis-network:
+    driver: bridge
 
-        servers:
-            - my-redis-ro.cache.amazonaws.com:6379:1
+volumes:
+  logs:
 ```
 
+view all your connected nodes, and traffic:
 
+```
+curl -s http://localhost:22222 | jq '.[0].pools.redis_read.servers[].dns_hosts.address_details[] | {cname, latency_us, healthy, current, requests}'
+```
+
+for example AWS with 5 read replicas:
+
+```
+{
+  "cname": "load-testing-002.qfjk8t.0001.euw1.cache.amazonaws.com",
+  "latency_us": 750,
+  "healthy": true,
+  "current": true,
+  "requests": 3403
+}
+{
+  "cname": "load-testing-006.qfjk8t.0001.euw1.cache.amazonaws.com",
+  "latency_us": 689,
+  "healthy": true,
+  "current": false,
+  "requests": 32586
+}
+{
+  "cname": "load-testing-001.qfjk8t.0001.euw1.cache.amazonaws.com",
+  "latency_us": 525,
+  "healthy": true,
+  "current": false,
+  "requests": 11387
+}
+{
+  "cname": "load-testing-005.qfjk8t.0001.euw1.cache.amazonaws.com",
+  "latency_us": 563,
+  "healthy": true,
+  "current": false,
+  "requests": 3807
+}
+{
+  "cname": "load-testing-004.qfjk8t.0001.euw1.cache.amazonaws.com",
+  "latency_us": 950,
+  "healthy": true,
+  "current": false,
+  "requests": 3188
+}
+```
+`current` is the preferred node, and most traffic will go to it, but depending on your configs only a % of traffic will go to it. If a node gets overloaded and latency increases, it will prefer nodes with lower latency. This encourages the same A-Z to be used, but also helps reduces load on nodes with high latency and likely are under pressure.
 
 ---
 

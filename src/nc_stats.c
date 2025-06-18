@@ -1710,12 +1710,16 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         if (read_hosts_pos != NULL) {
             /* Copy everything after "read_hosts": */
             char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
-            size_t content_len = strlen(content_start);
             
-            size_t format_overhead = 12 + 2; /* "dns_hosts": + ", " */
-            size_t total_needed = content_len + format_overhead;
+            /* Safely measure content length with bounds checking */
+            size_t max_content_len = room > 20 ? room - 20 : 0; /* Leave 20 bytes for format overhead */
+            size_t content_len = strnlen(content_start, max_content_len);
             
-            
+            /* Validate content fits in buffer */
+            if (content_len >= max_content_len) {
+                log_warn("🚨 DNS content too large for stats buffer: %zu bytes", content_len);
+                return NC_ERROR;
+            }
             
             int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
             if (n < 0 || n >= (int)room) {
