@@ -11,7 +11,7 @@ services:
     environment:
       # Redis server hostnames (can be DNS names for dynamic resolution)
       WRITE_HOST: "staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
-      READ_HOST: "staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com.com:6379"
+      READ_HOST: "staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
 
       # Zone-aware routing configuration
       ZONE_WEIGHT: "95"                    # % traffic to same-AZ
