@@ -37,8 +37,8 @@ cat > /etc/twemproxy/nutcracker.yml << EOL
 global:
     worker_processes: auto
     max_openfiles: 102400
-    user: root
-    group: root
+    user: twemproxy
+    group: twemproxy
     worker_shutdown_timeout: 30
 
 pools:
@@ -112,7 +112,7 @@ else
     exit 1
 fi
 
-# Execute the original command directly (running as root is fine for containers)
+# Execute the original command as non-root user for security
 echo "Command we will run to execute: $@"
 echo "Nutcracker version:"
 /usr/local/sbin/nutcracker --version

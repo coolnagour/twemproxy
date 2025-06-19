@@ -4,8 +4,8 @@
 global:
     worker_processes: auto
     max_openfiles: 102400
-    user: nobody
-    group: nobody
+    user: twemproxy
+    group: twemproxy
     worker_shutdown_timeout: 30
 
 pools:

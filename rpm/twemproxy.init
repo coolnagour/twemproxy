@@ -22,7 +22,7 @@ exec="/www/twemproxy/bin/nutcracker"
 prog=$(basename $exec)
 config="/www/twemproxy/conf/nutcracker.yml"
 logfile="/www/twemproxy/logs/twemproxy.log"
-pidfile="/var/run/twemproxy.pid"
+pidfile="/var/run/twemproxy/twemproxy.pid"
 
 [ -e /etc/sysconfig/$prog ] && . /etc/sysconfig/$prog
 
