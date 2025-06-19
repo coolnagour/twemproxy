@@ -89,8 +89,10 @@ struct conn {
     unsigned            done:1;          /* done? aka close? */
     unsigned            redis:1;         /* redis? */
     unsigned            authenticated:1; /* authenticated? */
+    unsigned            lifetime_expired:1; /* closed due to max lifetime? */
     
     int64_t             connect_start_ts; /* connection start timestamp (usec) */
+    uint32_t            addr_idx;        /* address index being used for this connection */
 };
 
 TAILQ_HEAD(conn_tqh, conn);

@@ -8,10 +8,23 @@ ZONE_WEIGHT=${ZONE_WEIGHT:-"95"}
 DNS_RESOLVE_INTERVAL=${DNS_RESOLVE_INTERVAL:-"30"}
 DNS_EXPIRATION_MINUTES=${DNS_EXPIRATION_MINUTES:-"5"}
 DNS_HEALTH_CHECK_INTERVAL=${DNS_HEALTH_CHECK_INTERVAL:-"30"}
+CONNECTION_POOLING=${CONNECTION_POOLING:-"true"}
+CONNECTION_WARMING=${CONNECTION_WARMING:-"1"}
+SERVER_CONNECTIONS=${SERVER_CONNECTIONS:-"1"}
+DYNAMIC_SERVER_CONNECTIONS=${DYNAMIC_SERVER_CONNECTIONS:-"false"}
+MAX_SERVER_CONNECTIONS=${MAX_SERVER_CONNECTIONS:-"10"}
+CONNECTION_MAX_LIFETIME=${CONNECTION_MAX_LIFETIME:-"30"}
 
 # Create configuration from template (running as root)
 echo "Creating configuration as $(whoami)..."
 echo "Writing to /etc/twemproxy/nutcracker.yml"
+echo "Environment variables:"
+echo "  ZONE_WEIGHT: $ZONE_WEIGHT"
+echo "  SERVER_CONNECTIONS: $SERVER_CONNECTIONS"
+echo "  CONNECTION_POOLING: $CONNECTION_POOLING"
+echo "  DYNAMIC_SERVER_CONNECTIONS: $DYNAMIC_SERVER_CONNECTIONS"
+echo "  MAX_SERVER_CONNECTIONS: $MAX_SERVER_CONNECTIONS"
+echo "  CONNECTION_MAX_LIFETIME: $CONNECTION_MAX_LIFETIME"
 
 # Ensure directory exists and is writable
 mkdir -p /etc/twemproxy
@@ -24,8 +37,8 @@ cat > /etc/twemproxy/nutcracker.yml << EOL
 global:
     worker_processes: auto
     max_openfiles: 102400
-    user: root
-    group: root
+    user: twemproxy
+    group: twemproxy
     worker_shutdown_timeout: 30
 
 pools:
@@ -50,7 +63,7 @@ pools:
         timeout: 2000
         server_retry_timeout: 10000
         server_failure_limit: 1
-        server_connections: 1
+        server_connections: ${SERVER_CONNECTIONS}
 
         # Zone-aware configuration
         zone_aware: true
@@ -60,8 +73,13 @@ pools:
         dns_health_check_interval: ${DNS_HEALTH_CHECK_INTERVAL}
 
         # Connection pooling for efficiency
-        connection_pooling: true
-        connection_warming: 1
+        connection_pooling: ${CONNECTION_POOLING}
+        connection_warming: ${CONNECTION_WARMING}
+        connection_max_lifetime: ${CONNECTION_MAX_LIFETIME}
+        
+        # Dynamic server connections
+        dynamic_server_connections: ${DYNAMIC_SERVER_CONNECTIONS}
+        max_server_connections: ${MAX_SERVER_CONNECTIONS}
 
         servers:
             - ${READ_HOST}:1
@@ -94,7 +112,7 @@ else
     exit 1
 fi
 
-# Execute the original command directly (running as root is fine for containers)
+# Execute the original command as non-root user for security
 echo "Command we will run to execute: $@"
 echo "Nutcracker version:"
 /usr/local/sbin/nutcracker --version

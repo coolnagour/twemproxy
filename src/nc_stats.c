@@ -505,6 +505,9 @@ stats_create_buf(struct stats *st)
         }
     }
 
+    /* Add extra buffer space for DNS host information - allow for up to 10 servers with 16 addresses each */
+    size += 25600; /* 25KB extra buffer: 10 servers * 16 addresses * 160 bytes per address */
+
     /* footer */
     size += 2;
 
@@ -1580,7 +1583,7 @@ stats_show_read_hosts(struct array *server_pool)
     uint32_t i, j, npool, nserver;
     struct server_pool *sp;
     struct server *server;
-    char buffer[4096];
+    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
     rstatus_t status;
 
     if (server_pool == NULL) {
@@ -1639,7 +1642,7 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     rstatus_t status;
     struct server *server;
     uint32_t i, j, npool, nserver;
-    char buffer[8192];
+    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
     
     /* Find the server object by name */
     server = NULL;
@@ -1663,6 +1666,12 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
     }
     
     /* If server not found or not dynamic, add empty object */
+    if (server == NULL) {
+    } else if (!server->is_dynamic) {
+    } else if (server->dns == NULL) {
+    } else {
+    }
+    
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
@@ -1689,18 +1698,32 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         return NC_OK;
     }
     
+    
     /* Add the DNS hosts information to stats */
     {
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
         size_t room = buf->size - buf->len - 1;
         /* Replace "read_hosts" with "dns_hosts" in the buffer */
+        
         char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
         if (read_hosts_pos != NULL) {
             /* Copy everything after "read_hosts": */
             char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
+            
+            /* Safely measure content length with bounds checking */
+            size_t max_content_len = room > 20 ? room - 20 : 0; /* Leave 20 bytes for format overhead */
+            size_t content_len = strnlen(content_start, max_content_len);
+            
+            /* Validate content fits in buffer */
+            if (content_len >= max_content_len) {
+                log_warn("🚨 DNS content too large for stats buffer: %zu bytes", content_len);
+                return NC_ERROR;
+            }
+            
             int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
             if (n < 0 || n >= (int)room) {
+                log_warn("🚨 MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
                 return NC_ERROR;
             }
             buf->len += (size_t)n;

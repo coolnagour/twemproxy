@@ -41,7 +41,7 @@
 #define NC_STATS_ADDR       STATS_ADDR
 #define NC_STATS_INTERVAL   STATS_INTERVAL
 
-#define NC_PID_FILE         "/var/run/twemproxy.pid"
+#define NC_PID_FILE         "/var/run/twemproxy/twemproxy.pid"
 
 #define NC_MBUF_SIZE        MBUF_SIZE
 #define NC_MBUF_MIN_SIZE    MBUF_MIN_SIZE

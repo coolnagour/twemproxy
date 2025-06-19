@@ -24,6 +24,9 @@
 #include <nc_conf.h>
 #include <nc_client.h>
 
+/* Forward declarations */
+static void server_update_dynamic_connections(struct server *server);
+
 static void
 server_resolve(struct server *server, struct conn *conn)
 {
@@ -42,6 +45,7 @@ server_resolve(struct server *server, struct conn *conn)
         if (best_idx < server->dns->naddresses) {
             server->current_addr_idx = best_idx;
             server->info = server->dns->addresses[best_idx];
+            conn->addr_idx = best_idx;  /* Track which address this connection uses */
         }
     } else {
         /* Use traditional single-address resolution */
@@ -400,7 +404,9 @@ server_close(struct context *ctx, struct conn *conn)
     conn->connected = false;
 
     if (conn->sd < 0) {
-        server_failure(ctx, conn->owner);
+        if (!conn->lifetime_expired) {
+            server_failure(ctx, conn->owner);
+        }
         conn->unref(conn);
         conn_put(conn);
         return;
@@ -493,7 +499,9 @@ server_close(struct context *ctx, struct conn *conn)
 
     ASSERT(conn->smsg == NULL);
 
-    server_failure(ctx, conn->owner);
+    if (!conn->lifetime_expired) {
+        server_failure(ctx, conn->owner);
+    }
 
     conn->unref(conn);
 
@@ -588,7 +596,7 @@ server_connect(struct context *ctx, struct server *server, struct conn *conn)
     if (server->is_dynamic && server->dns != NULL && conn->connect_start_ts > 0) {
         int64_t latency = nc_usec_now() - conn->connect_start_ts;
         if (latency > 0) {
-            server_measure_latency(server, server->current_addr_idx, latency);
+            server_measure_latency(server, conn->addr_idx, latency);
         }
     }
     
@@ -619,7 +627,7 @@ server_connected(struct context *ctx, struct conn *conn)
     if (server->is_dynamic && server->dns != NULL && conn->connect_start_ts > 0) {
         int64_t latency = nc_usec_now() - conn->connect_start_ts;
         if (latency > 0) {
-            server_measure_latency(server, server->current_addr_idx, latency);
+            server_measure_latency(server, conn->addr_idx, latency);
         }
     }
 
@@ -643,6 +651,22 @@ server_ok(struct context *ctx, struct conn *conn)
                   server->failure_count);
         server->failure_count = 0;
         server->next_retry = 0LL;
+    }
+    
+    /* Improve health score for successful operations on dynamic DNS servers */
+    if (server->is_dynamic && server->dns != NULL) {
+        uint32_t addr_idx = conn->addr_idx;
+        if (addr_idx < server->dns->naddresses && server->dns->health_scores != NULL) {
+            /* Gradually improve health score for successful operations */
+            if (server->dns->health_scores[addr_idx] < 90) {
+                server->dns->health_scores[addr_idx] += 5;
+                if (server->dns->health_scores[addr_idx] > 100) {
+                    server->dns->health_scores[addr_idx] = 100;
+                }
+            }
+            /* Reset failure count for this specific address */
+            server->dns->failure_counts[addr_idx] = 0;
+        }
     }
 }
 
@@ -1046,7 +1070,7 @@ server_pool_deinit(struct array *server_pool)
 #define DNS_RESOLVE_INTERVAL_USEC    (30 * 1000000)  /* 30 seconds */
 #define LATENCY_CHECK_INTERVAL_USEC  (5 * 1000000)   /* 5 seconds */
 #define MAX_ADDRESSES_PER_SERVER     16
-#define DEFAULT_LATENCY_USEC         (100 * 1000)    /* 100ms default */
+#define DEFAULT_LATENCY_USEC         100             /* 0.1ms default - very optimistic to prioritize new servers */
 
 rstatus_t
 server_dns_init(struct server *server)
@@ -1162,6 +1186,14 @@ server_dns_deinit(struct server *server)
         nc_free(dns->last_seen);
     }
     
+    if (dns->last_connected != NULL) {
+        nc_free(dns->last_connected);
+    }
+    
+    if (dns->request_counts != NULL) {
+        nc_free(dns->request_counts);
+    }
+    
     if (dns->hostnames != NULL) {
         /* Free individual hostname strings */
         for (uint32_t i = 0; i < dns->naddresses; i++) {
@@ -1227,6 +1259,20 @@ server_dns_resolve(struct server *server)
         }
         log_error("failed to resolve '%.*s': %s", 
                   dns->hostname.len, dns->hostname.data, strerror(errno));
+        
+        /* Clean up allocated memory on error */
+        if (new_addresses) {
+            nc_free(new_addresses);
+        }
+        if (new_hostnames != NULL) {
+            for (uint32_t i = 0; i < new_naddresses; i++) {
+                if (new_hostnames[i] != NULL) {
+                    nc_free(new_hostnames[i]);
+                }
+            }
+            nc_free(new_hostnames);
+        }
+        
         return status;
     }
     
@@ -1238,15 +1284,28 @@ server_dns_resolve(struct server *server)
         dns->addresses = new_addresses;
         dns->naddresses = new_naddresses;
         
+        /* Update dynamic server connections after initial DNS resolution */
+        server_update_dynamic_connections(server);
+        
+        /* Validate address count before allocation to prevent excessive memory usage */
+        if (dns->naddresses > 16) { /* Reasonable limit for DNS addresses */
+            log_error("DNS returned excessive address count %"PRIu32" for '%.*s', limiting to 16",
+                      dns->naddresses, server->pname.len, server->pname.data);
+            dns->naddresses = 16;
+        }
+        
         /* Allocate tracking arrays */
         dns->latencies = nc_alloc(dns->naddresses * sizeof(uint32_t));
         dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
         dns->failure_counts = nc_alloc(dns->naddresses * sizeof(uint32_t));
         dns->last_seen = nc_alloc(dns->naddresses * sizeof(int64_t));
+        dns->last_connected = nc_alloc(dns->naddresses * sizeof(int64_t));
+        dns->request_counts = nc_alloc(dns->naddresses * sizeof(uint64_t));
         dns->hostnames = nc_alloc(dns->naddresses * sizeof(struct string));
         
         if (dns->latencies == NULL || dns->last_latency_check == NULL || 
-            dns->failure_counts == NULL || dns->last_seen == NULL || dns->hostnames == NULL) {
+            dns->failure_counts == NULL || dns->last_seen == NULL || 
+            dns->last_connected == NULL || dns->request_counts == NULL || dns->hostnames == NULL) {
             return NC_ENOMEM;
         }
         
@@ -1256,13 +1315,37 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check[i] = 0;
             dns->failure_counts[i] = 0;
             dns->last_seen[i] = now;
+            dns->last_connected[i] = 0;
+            dns->request_counts[i] = 0;
             
             /* Initialize hostname from the captured canonical name */
             string_init(&dns->hostnames[i]);
             if (new_hostnames != NULL && new_hostnames[i] != NULL) {
                 char *canonical_name = new_hostnames[i];
-                string_copy(&dns->hostnames[i], canonical_name, strlen(canonical_name));
-                log_warn("captured canonical hostname for addr %"PRIu32": %s", i, canonical_name);
+                
+                /* Validate hostname for security */
+                size_t name_len = strlen(canonical_name);
+                if (name_len > 255 || name_len == 0) {
+                    log_warn("Invalid hostname length %zu for addr %"PRIu32", using default", name_len, i);
+                    string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
+                } else {
+                    bool valid = true;
+                    for (size_t j = 0; j < name_len; j++) {
+                        char c = canonical_name[j];
+                        if (!isalnum(c) && c != '-' && c != '.' && c != '_') {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    
+                    if (valid) {
+                        string_copy(&dns->hostnames[i], canonical_name, name_len);
+                        log_warn("captured canonical hostname for addr %"PRIu32": %s", i, canonical_name);
+                    } else {
+                        log_warn("Invalid hostname characters for addr %"PRIu32", using default", i);
+                        string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
+                    }
+                }
             } else {
                 string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
                 log_warn("no canonical name for addr %"PRIu32", using original: %.*s", 
@@ -1346,11 +1429,13 @@ server_dns_resolve(struct server *server)
             int64_t *new_last_latency_check = nc_realloc(dns->last_latency_check, new_size * sizeof(int64_t));
             uint32_t *new_failure_counts = nc_realloc(dns->failure_counts, new_size * sizeof(uint32_t));
             int64_t *new_last_seen = nc_realloc(dns->last_seen, new_size * sizeof(int64_t));
+            int64_t *new_last_connected = nc_realloc(dns->last_connected, new_size * sizeof(int64_t));
+            uint64_t *new_request_counts = nc_realloc(dns->request_counts, new_size * sizeof(uint64_t));
             struct string *new_hostnames_array = nc_realloc(dns->hostnames, new_size * sizeof(struct string));
             
             if (new_addr_array == NULL || new_latencies == NULL || 
                 new_last_latency_check == NULL || new_failure_counts == NULL ||
-                new_last_seen == NULL || new_hostnames_array == NULL) {
+                new_last_seen == NULL || new_last_connected == NULL || new_request_counts == NULL || new_hostnames_array == NULL) {
                 log_error("failed to allocate memory for new DNS address");
                 if (new_addresses) nc_free(new_addresses);
                 return NC_ENOMEM;
@@ -1361,6 +1446,8 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check = new_last_latency_check;
             dns->failure_counts = new_failure_counts;
             dns->last_seen = new_last_seen;
+            dns->last_connected = new_last_connected;
+            dns->request_counts = new_request_counts;
             dns->hostnames = new_hostnames_array;
             
             /* Add the new address */
@@ -1369,6 +1456,8 @@ server_dns_resolve(struct server *server)
             dns->last_latency_check[dns->naddresses] = 0;
             dns->failure_counts[dns->naddresses] = 0;
             dns->last_seen[dns->naddresses] = now;
+            dns->last_connected[dns->naddresses] = 0;
+            dns->request_counts[dns->naddresses] = 0;
             
             /* Initialize hostname for new address from captured canonical name */
             string_init(&dns->hostnames[dns->naddresses]);
@@ -1383,6 +1472,9 @@ server_dns_resolve(struct server *server)
             
             dns->naddresses++;
             
+            /* Update dynamic server connections after adding new address */
+            server_update_dynamic_connections(server);
+            
             char addr_str[INET6_ADDRSTRLEN];
             struct sockaddr *addr = (struct sockaddr *)&new_addresses[i].addr;
             if (addr->sa_family == AF_INET) {
@@ -1396,6 +1488,12 @@ server_dns_resolve(struct server *server)
             }
             log_warn("added new address %s for '%.*s' (total addresses: %"PRIu32")", 
                      addr_str, dns->hostname.len, dns->hostname.data, dns->naddresses);
+            
+            /* Force immediate zone re-analysis for new servers */
+            if (pool && pool->zone_aware) {
+                dns->last_zone_analysis = 0; /* Reset to force immediate re-analysis */
+                log_warn("🌍 forcing zone re-analysis for new server %s", addr_str);
+            }
         }
     }
     
@@ -1406,12 +1504,12 @@ server_dns_resolve(struct server *server)
         bool should_expire = false;
         
         /* Expire address if it hasn't been seen in DNS for expiration_threshold time */
-        /* For currently active address (current_addr_idx), also require failure threshold */
-        /* For inactive addresses, just time-based expiration is sufficient */
+        /* For inactive addresses, time-based expiration is sufficient */
+        /* For currently active address, use a longer threshold but still expire if not seen in DNS */
         if (time_since_seen > expiration_threshold) {
             if (i == server->current_addr_idx) {
-                /* Current address: require both time and failure thresholds */
-                should_expire = (dns->failure_counts[i] > (pool ? pool->dns_failure_threshold : 3));
+                /* Current address: use 2x expiration threshold to be more conservative */
+                should_expire = (time_since_seen > (2 * expiration_threshold));
             } else {
                 /* Non-current address: time-based expiration only */
                 should_expire = true;
@@ -1430,11 +1528,11 @@ server_dns_resolve(struct server *server)
             }
             
             if (i == server->current_addr_idx) {
-                log_warn("expiring current address %s for '%.*s' (not seen for %"PRId64"s, %"PRIu32" failures > threshold)",
+                log_warn("🕐 expiring current address %s for '%.*s' (not seen in DNS for %"PRId64"s, exceeds 2x threshold)",
                          addr_str, dns->hostname.len, dns->hostname.data, 
-                         time_since_seen / 1000000, dns->failure_counts[i]);
+                         time_since_seen / 1000000);
             } else {
-                log_warn("expiring inactive address %s for '%.*s' (not seen for %"PRId64"s)",
+                log_warn("🕐 expiring inactive address %s for '%.*s' (not seen in DNS for %"PRId64"s)",
                          addr_str, dns->hostname.len, dns->hostname.data, 
                          time_since_seen / 1000000);
             }
@@ -1556,10 +1654,21 @@ server_select_best_address(struct server *server)
     /* Cache endpoint discovery (always enabled for cache services) */
     server_discover_cache_endpoints(server);
     
+    /* Check if current server is still healthy - if not, force immediate re-selection */
+    if (server->current_addr_idx < dns->naddresses && 
+        !server_is_healthy(server, server->current_addr_idx)) {
+        log_warn("🚨 CURRENT server addr %"PRIu32" is now UNHEALTHY for '%.*s' - forcing re-selection", 
+                 server->current_addr_idx, server->pname.len, server->pname.data);
+    }
+    
     /* Find best address and collect all healthy servers */
     for (i = 0; i < dns->naddresses; i++) {
         /* Enhanced health checking */
         if (!server_is_healthy(server, i)) {
+            if (i == server->current_addr_idx) {
+                log_warn("⚠️  current server addr %"PRIu32" marked unhealthy for '%.*s'", 
+                         i, server->pname.len, server->pname.data);
+            }
             log_debug(LOG_VVERB, "skipping unhealthy server address %"PRIu32, i);
             continue;
         }
@@ -1592,8 +1701,25 @@ server_select_best_address(struct server *server)
     }
     
     if (healthy_count == 0) {
+        log_error("🚨 NO HEALTHY SERVERS found for '%.*s' - all %"PRIu32" addresses are unhealthy!", 
+                  server->pname.len, server->pname.data, dns->naddresses);
         nc_free(healthy_servers);
         return 0;
+    }
+    
+    /* If current server is unhealthy, it should NOT be in healthy_servers list */
+    /* This ensures we ALWAYS switch away from unhealthy current servers */
+    bool current_is_healthy = false;
+    for (i = 0; i < healthy_count; i++) {
+        if (healthy_servers[i] == server->current_addr_idx) {
+            current_is_healthy = true;
+            break;
+        }
+    }
+    
+    if (!current_is_healthy && server->current_addr_idx < dns->naddresses) {
+        log_warn("🔄 current server addr %"PRIu32" excluded from healthy list - will force switch", 
+                 server->current_addr_idx);
     }
     
     if (healthy_count == 1) {
@@ -1605,13 +1731,14 @@ server_select_best_address(struct server *server)
     }
     
     /* Zone-aware server selection with high preference for same-zone servers */
-    if (pool->zone_aware && dns->zone_ids != NULL) {
+    if (pool->zone_aware && dns->zone_ids != NULL && dns->naddresses > 0) {
         uint32_t same_zone_count = 0;
         uint32_t *same_zone_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
         uint32_t *other_zone_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
         uint32_t other_zone_count = 0;
         
         if (same_zone_servers == NULL || other_zone_servers == NULL) {
+            log_error("Failed to allocate zone server arrays for %"PRIu32" addresses", dns->naddresses);
             if (same_zone_servers) nc_free(same_zone_servers);
             if (other_zone_servers) nc_free(other_zone_servers);
             nc_free(healthy_servers);
@@ -1633,8 +1760,103 @@ server_select_best_address(struct server *server)
         log_debug(LOG_VERB, "🌍 zone routing for '%.*s': %"PRIu32" same-zone, %"PRIu32" other-zone servers (zone_weight: %"PRIu32"%%)", 
                   server->pname.len, server->pname.data, same_zone_count, other_zone_count, pool->zone_weight);
         
+        /* Aggressive prioritization of untested servers */
+        uint32_t untested_server = UINT32_MAX;
+        for (i = 0; i < healthy_count; i++) {
+            uint32_t idx = healthy_servers[i];
+            /* If latency is still default (untested) */
+            if (dns->latencies[idx] == DEFAULT_LATENCY_USEC) {
+                int64_t now = nc_usec_now();
+                int64_t time_since_seen = (now > 0 && dns->last_seen[idx] > 0) ? 
+                                          (now - dns->last_seen[idx]) : 0;
+                /* Prioritize any untested server discovered recently (within 2 minutes) */
+                if (time_since_seen < 120000000LL) {
+                    untested_server = idx;
+                    /* Get the CNAME for this specific address */
+                    const char *cname_str = "unknown";
+                    if (dns->hostnames != NULL && idx < dns->naddresses && dns->hostnames[idx].data != NULL) {
+                        cname_str = (const char *)dns->hostnames[idx].data;
+                    }
+                    
+                    log_warn("🚀 AGGRESSIVE: prioritizing untested CNAME '%s' (addr %"PRIu32") for '%.*s' (latency=%"PRIu32"μs, discovered %"PRId64"s ago)", 
+                             cname_str, idx, server->pname.len, server->pname.data, 
+                             dns->latencies[idx], time_since_seen / 1000000);
+                    break;
+                }
+            }
+        }
+        
+        /* If we found an untested server, use it immediately to get real latency measurement */
+        if (untested_server != UINT32_MAX) {
+            stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[untested_server]);
+            nc_free(healthy_servers);
+            nc_free(same_zone_servers);
+            nc_free(other_zone_servers);
+            return untested_server;
+        }
+        
+        /* Periodically probe other servers to refresh their latency measurements */
+        /* This prevents servers from getting "stuck" with old high latency readings */
+        /* Use server-specific counter to avoid thread safety issues */
+        if (dns->last_zone_analysis == 0) {
+            dns->last_zone_analysis = nc_usec_now(); /* Initialize probe counter base */
+        }
+        uint32_t probe_counter = (uint32_t)((nc_usec_now() - dns->last_zone_analysis) / 1000000); /* Seconds since init */
+        
+        /* Every 5th selection (~5-10 seconds with typical traffic), probe a different server */
+        if (probe_counter % 5 == 0 && healthy_count > 1) {
+            uint32_t probe_idx = UINT32_MAX;
+            int64_t now = nc_usec_now();
+            
+            /* Find servers that haven't been measured recently */
+            for (i = 0; i < healthy_count; i++) {
+                uint32_t idx = healthy_servers[i];
+                if (idx != server->current_addr_idx) { /* Don't probe current server */
+                    int64_t time_since_latency_check = (now > 0 && dns->last_latency_check[idx] > 0) ? 
+                                                       (now - dns->last_latency_check[idx]) : LLONG_MAX;
+                    /* If latency hasn't been checked in 5+ minutes, probe this server */
+                    if (time_since_latency_check > 300000000LL) { /* 5 minutes */
+                        probe_idx = idx;
+                        /* Get the CNAME for this specific address */
+                        const char *cname_str = "unknown";
+                        if (dns->hostnames != NULL && idx < dns->naddresses && dns->hostnames[idx].data != NULL) {
+                            cname_str = (const char *)dns->hostnames[idx].data;
+                        }
+                        
+                        log_warn("🔄 probing CNAME '%s' (addr %"PRIu32") for '%.*s' (latency not checked for %"PRId64"s)", 
+                                 cname_str, idx, server->pname.len, server->pname.data, 
+                                 time_since_latency_check / 1000000);
+                        break;
+                    }
+                }
+            }
+            
+            if (probe_idx != UINT32_MAX) {
+                stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[probe_idx]);
+                nc_free(healthy_servers);
+                nc_free(same_zone_servers);
+                nc_free(other_zone_servers);
+                return probe_idx;
+            }
+        }
+        
         /* Apply zone-aware routing: zone_weight% preference for same-zone servers */
         rand_val = (uint32_t)rand() % 100;
+        
+        /* Occasionally (~5% of time) probe a random server to refresh latency measurements */
+        if (rand_val >= 95 && healthy_count > 1) {
+            uint32_t random_probe = healthy_servers[rand() % healthy_count];
+            if (random_probe != server->current_addr_idx) {
+                log_debug(LOG_INFO, "🎲 random latency probe: selecting addr %"PRIu32" for '%.*s' (current latency: %"PRIu32"μs)", 
+                          random_probe, server->pname.len, server->pname.data, dns->latencies[random_probe]);
+                
+                stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[random_probe]);
+                nc_free(healthy_servers);
+                nc_free(same_zone_servers);
+                nc_free(other_zone_servers);
+                return random_probe;
+            }
+        }
         
         if (same_zone_count > 0 && rand_val < pool->zone_weight) {
             /* Select from same-zone servers */
@@ -1691,6 +1913,45 @@ server_select_best_address(struct server *server)
     return best_idx;
 }
 
+static void
+server_update_dynamic_connections(struct server *server)
+{
+    struct server_pool *pool;
+    struct server_dns *dns;
+    
+    if (server == NULL || !server->is_dynamic) {
+        return;
+    }
+    
+    pool = server->owner;
+    dns = server->dns;
+    
+    if (pool == NULL || dns == NULL || !pool->dynamic_server_connections) {
+        return;
+    }
+    
+    /* Calculate optimal connections: min(dns_addresses, max_server_connections) */
+    uint32_t optimal_connections = dns->naddresses;
+    if (optimal_connections > pool->max_server_connections) {
+        optimal_connections = pool->max_server_connections;
+    }
+    
+    /* Ensure at least 1 connection */
+    if (optimal_connections < 1) {
+        optimal_connections = 1;
+    }
+    
+    /* Update current_server_connections if it changed */
+    if (pool->current_server_connections != optimal_connections) {
+        uint32_t old_connections = pool->current_server_connections;
+        pool->current_server_connections = optimal_connections;
+        
+        log_warn("📈 dynamic server_connections updated for '%.*s': %"PRIu32" → %"PRIu32" (dns_addresses: %"PRIu32")",
+                 server->pname.len, server->pname.data, 
+                 old_connections, optimal_connections, dns->naddresses);
+    }
+}
+
 rstatus_t
 server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency)
 {
@@ -1717,6 +1978,7 @@ server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency
     }
     
     dns->last_latency_check[addr_idx] = nc_usec_now();
+    dns->last_connected[addr_idx] = nc_usec_now();
     
     return NC_OK;
 }
@@ -1795,6 +2057,9 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         "    \"zones_detected\": %"PRIu32",\n"
         "    \"same_zone_servers\": %"PRIu32",\n"
         "    \"cross_zone_servers\": %"PRIu32",\n"
+        "    \"current_server_connections\": %"PRIu32",\n"
+        "    \"max_server_connections\": %"PRIu32",\n"
+        "    \"dynamic_server_connections\": %s,\n"
         "    \"address_details\": [\n",
         dns->hostname.len, dns->hostname.data,
         dns->resolve_interval / 1000000, /* convert to seconds */
@@ -1805,9 +2070,18 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         pool->zone_weight,
         zones_detected,
         same_zone_count,
-        cross_zone_count);
+        cross_zone_count,
+        pool->current_server_connections,
+        pool->max_server_connections,
+        pool->dynamic_server_connections ? "true" : "false");
     
-    if (written >= buffer_size) return NC_ERROR;
+
+
+    if (written >= buffer_size) {
+        log_warn("🚨 BUFFER OVERFLOW: Stats buffer too small! written=%zu, buffer_size=%zu", written, buffer_size);
+        return NC_ERROR;
+    }
+    
     
     /* Add details for each address */
     for (i = 0; i < dns->naddresses; i++) {
@@ -1831,10 +2105,12 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         const char* zone_type = (pool->zone_aware && dns->zone_ids != NULL && zone_id == dns->local_zone_id) ? "same-az" : "cross-az";
         bool is_healthy = server_is_healthy(server, i);
         
-        /* Calculate seconds since last seen in DNS */
+        /* Calculate seconds since last seen in DNS and last used for connection */
         int64_t now = nc_usec_now();
-        int64_t seconds_since_last_seen = (now > 0 && dns->last_seen[i] > 0) ? 
-                                          (now - dns->last_seen[i]) / 1000000 : -1;
+        int64_t last_seen_in_dns_lookup = (now > 0 && dns->last_seen[i] > 0) ? 
+                                           (now - dns->last_seen[i]) / 1000000 : -1;
+        int64_t last_chosen_for_connection = (now > 0 && dns->last_connected[i] > 0) ? 
+                                              (now - dns->last_connected[i]) / 1000000 : -1;
         
         /* Get hostname for this address */
         const char *cname_str = "unknown";
@@ -1857,17 +2133,27 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "        \"zone_weight\": %"PRIu32",\n"
             "        \"healthy\": %s,\n"
             "        \"current\": %s,\n"
-            "        \"seconds_since_last_seen\": %"PRId64"\n"
+            "        \"last_seen_in_dns_lookup\": %"PRId64",\n"
+            "        \"last_chosen_for_connection\": %"PRId64",\n"
+            "        \"requests\": %"PRIu64"\n"
             "      }%s\n",
             i, addr_str, cname_str, dns->latencies[i], dns->failure_counts[i],
             zone_id, zone_type, zone_weight, 
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",
-            seconds_since_last_seen,
+            last_seen_in_dns_lookup,
+            last_chosen_for_connection,
+            dns->request_counts[i],
             (i < dns->naddresses - 1) ? "," : "");
         
         written += addr_written;
-        if (written >= buffer_size) return NC_ERROR;
+        
+        
+        if (written >= buffer_size) {
+            log_warn("🚨 BUFFER OVERFLOW: After address %"PRIu32", buffer exceeded! written=%zu, buffer_size=%zu", 
+                     i, written, buffer_size);
+            return NC_ERROR;
+        }
     }
     
     {
@@ -1875,9 +2161,16 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "    ]\n"
             "  }");
         written += final_written;
+        
     }
     
-    return (written < buffer_size) ? NC_OK : NC_ERROR;
+    if (written >= buffer_size) {
+        log_warn("🚨 FINAL BUFFER OVERFLOW: Stats generation failed! written=%zu, buffer_size=%zu", 
+                 written, buffer_size);
+        return NC_ERROR;
+    }
+    
+    return NC_OK;
 }
 
 /*
@@ -1936,7 +2229,7 @@ server_detect_zones_by_latency(struct server *server)
     total_latency = 0;
     
     for (i = 0; i < dns->naddresses; i++) {
-        if (dns->failure_counts[i] <= 2) { /* Only consider healthy servers */
+        if (dns->failure_counts[i] <= dns->consecutive_failures_limit) { /* Only consider healthy servers */
             healthy_count++;
             total_latency += dns->latencies[i];
             if (dns->latencies[i] < min_latency) {
@@ -1955,25 +2248,25 @@ server_detect_zones_by_latency(struct server *server)
     avg_latency = total_latency / healthy_count;
     
     /* 
-     * Auto-detect low latency threshold using statistical outlier detection:
-     * Servers with latency <= (min + 25% of range) are considered "local zone"
-     * This groups the lowest latency servers together automatically
+     * Percentage-based zone detection: servers within 10% of minimum latency are "same-az"
+     * This approach scales automatically to any latency environment
      */
-    uint32_t latency_range = max_latency - min_latency;
-    low_latency_threshold = min_latency + (latency_range / 4); /* 25% above minimum */
+    uint32_t percentage_threshold = min_latency + (min_latency / 10); /* 10% above minimum */
     
-    /* Ensure threshold is reasonable - at least allow servers within 10ms of minimum */
-    uint32_t min_threshold = min_latency + 10000; /* 10ms */
-    if (low_latency_threshold < min_threshold) {
-        low_latency_threshold = min_threshold;
-    }
+    /* Fallback to range-based for very small latencies where 10% might be too small */
+    uint32_t latency_range = max_latency - min_latency;
+    uint32_t range_threshold = min_latency + (latency_range / 6); /* 15% of range */
+    
+    /* Use the larger of the two thresholds to ensure meaningful separation */
+    low_latency_threshold = (percentage_threshold > range_threshold) ? 
+                           percentage_threshold : range_threshold;
     
     /* Assign zone IDs based on statistical grouping */
     dns->local_zone_id = 1; /* Local zone is always 1 */
     dns->next_zone_id = 2;
     
     for (i = 0; i < dns->naddresses; i++) {
-        if (dns->failure_counts[i] > 2) {
+        if (dns->failure_counts[i] > dns->consecutive_failures_limit) {
             dns->zone_ids[i] = 99; /* Unhealthy zone */
             continue;
         }
@@ -2122,7 +2415,7 @@ server_health_check(struct server *server, uint32_t addr_idx)
     
     /* Reduce score based on failure rate */
     if (failures > 0) {
-        health_score -= (failures * 20); /* -20 points per failure */
+        health_score -= (failures * 20); 
     }
     
     /* Reduce score for high latency (>100ms = unhealthy) */
@@ -2130,8 +2423,8 @@ server_health_check(struct server *server, uint32_t addr_idx)
         health_score -= ((latency - 100000) / 10000); /* -1 point per 10ms over 100ms */
     }
     
-    /* Ensure score doesn't go below 0 */
-    if (health_score > 100) health_score = 0; /* Handle underflow */
+    /* Ensure score doesn't go below 0 - handle underflow properly */
+    if (health_score > 10000 || health_score == UINT32_MAX) health_score = 0;
     
     /* Update health score with exponential moving average */
     dns->health_scores[addr_idx] = (dns->health_scores[addr_idx] * 7 + health_score * 3) / 10;
@@ -2160,14 +2453,28 @@ server_is_healthy(struct server *server, uint32_t addr_idx)
     /* Perform health check if needed */
     server_health_check(server, addr_idx);
     
-    /* Consider healthy if health score > 30 and failures < limit */
-    bool is_healthy = (dns->health_scores != NULL && dns->health_scores[addr_idx] > 30) &&
-                     (dns->failure_counts[addr_idx] < dns->consecutive_failures_limit);
+    /* Check if address hasn't been seen in DNS recently */
+    int64_t now = nc_usec_now();
+    int64_t time_since_seen = (now > 0 && dns->last_seen[addr_idx] > 0) ? 
+                              (now - dns->last_seen[addr_idx]) : 0;
+    struct server_pool *pool = server->owner;
+    int64_t stale_threshold = pool ? pool->dns_expiration_minutes : (5 * 60000000LL); /* Use config or 5 minutes default */
     
-    log_debug(LOG_VVERB, "🏥 health status addr %"PRIu32": %s (score=%"PRIu32", failures=%"PRIu32")",
+     /* Consider healthy if health score > 30, failures < limit, and recently seen in DNS */
+    bool is_healthy = (dns->health_scores != NULL && dns->health_scores[addr_idx] > 30) &&
+                     (dns->failure_counts[addr_idx] < dns->consecutive_failures_limit) &&
+                     (time_since_seen < stale_threshold);
+    
+    if (time_since_seen >= stale_threshold) {
+        log_debug(LOG_INFO, "🕐 marking addr %"PRIu32" as unhealthy: not seen in DNS for %"PRId64" seconds",
+                  addr_idx, time_since_seen / 1000000);
+    }
+    
+    log_debug(LOG_VVERB, "🏥 health status addr %"PRIu32": %s (score=%"PRIu32", failures=%"PRIu32", last_seen=%"PRId64"s ago)",
               addr_idx, is_healthy ? "healthy" : "unhealthy",
               dns->health_scores ? dns->health_scores[addr_idx] : 0,
-              dns->failure_counts[addr_idx]);
+              dns->failure_counts[addr_idx],
+              time_since_seen / 1000000);
     
     return is_healthy;
 }

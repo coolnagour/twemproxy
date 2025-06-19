@@ -43,8 +43,8 @@ RUN apk --no-cache add \
 
 # Create user for running twemproxy (Alpine style)
 RUN adduser -D -s /bin/false twemproxy && \
-    mkdir -p /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy && \
-    chown twemproxy:twemproxy /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy
+    mkdir -p /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy /var/run/twemproxy && \
+    chown -R twemproxy:twemproxy /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy /var/run/twemproxy
 
 # Copy binary from builder
 COPY --from=builder /tmp/install/usr/local/sbin/nutcracker /usr/local/sbin/
@@ -72,8 +72,8 @@ LABEL maintainer="Twemproxy Enhanced" \
       org.opencontainers.image.description="Redis proxy with intelligent zone-aware routing" \
       org.opencontainers.image.source="https://github.com/coolnagour/twemproxy"
 
-# Keep as root for entrypoint (will switch users in entrypoint script)
-# USER twemproxy
+# Switch to non-root user for security
+USER twemproxy
 
 # Set entrypoint and default command (using dumb-init like working example)
 ENTRYPOINT ["dumb-init", "--rewrite", "15:2", "--", "/usr/local/bin/entrypoint.sh"]
@@ -82,4 +82,4 @@ CMD ["/usr/local/sbin/nutcracker", \
      "--output=/var/log/twemproxy/nutcracker.log", \
      "--stats-port=22222", \
      "--stats-addr=0.0.0.0", \
-     "--stats-interval=30000"]
+     "--stats-interval=5000"]

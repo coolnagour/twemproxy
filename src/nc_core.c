@@ -363,10 +363,57 @@ core_dns_maintenance(struct context *ctx)
     
     last_dns_check = now;
     
-    /* Check all server pools for dynamic DNS servers */
+    /* Check all server pools for dynamic DNS servers and connection lifetimes */
     npool = array_n(&ctx->pool);
     for (i = 0; i < npool; i++) {
         struct server_pool *pool = array_get(&ctx->pool, i);
+        
+        /* Check for expired connections if max lifetime is configured */
+        if (pool->connection_max_lifetime > 0) {
+            struct conn *conn, *nconn;
+            uint32_t expired_count = 0;
+            
+            /* Check server connections for max lifetime expiration */
+            nserver = array_n(&pool->server);
+            for (j = 0; j < nserver; j++) {
+                struct server *server = array_get(&pool->server, j);
+                
+                for (conn = TAILQ_FIRST(&server->s_conn_q); conn != NULL; conn = nconn) {
+                    nconn = TAILQ_NEXT(conn, conn_tqe);
+                    
+                    /* Check if connection has exceeded max lifetime */
+                    if (conn->connect_start_ts > 0 && 
+                        (now - conn->connect_start_ts) > pool->connection_max_lifetime) {
+                        
+                        /* Get the CNAME for the specific address this connection is using */
+                        const char *cname_str = "unknown";
+                        if (server->is_dynamic && server->dns != NULL && 
+                            server->dns->hostnames != NULL && 
+                            conn->addr_idx < server->dns->naddresses && 
+                            server->dns->hostnames[conn->addr_idx].data != NULL) {
+                            cname_str = (const char *)server->dns->hostnames[conn->addr_idx].data;
+                        }
+                        
+                        log_warn("⏰ CONNECTION LIFETIME EXPIRED: Closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
+                                 cname_str, conn->addr_idx, server->pname.len, server->pname.data,
+                                 (now - conn->connect_start_ts) / 1000000,
+                                 pool->connection_max_lifetime / 1000000);
+                        
+                        /* Mark as lifetime expired to avoid counting as failure */
+                        conn->lifetime_expired = 1;
+                        
+                        /* Close the expired connection - this will trigger new server selection */
+                        core_close(ctx, conn);
+                        expired_count++;
+                    }
+                }
+            }
+            
+            if (expired_count > 0) {
+                log_warn("🔄 LIFETIME CHECK: Closed %"PRIu32" expired connections in pool '%.*s' - new connections will trigger server re-selection",
+                         expired_count, pool->name.len, pool->name.data);
+            }
+        }
         
         nserver = array_n(&pool->server);
         for (j = 0; j < nserver; j++) {
@@ -377,13 +424,44 @@ core_dns_maintenance(struct context *ctx)
                 if (server_should_resolve_dns(server)) {
                     rstatus_t status = server_dns_check_update(server);
                     if (status == NC_OK) {
-                        log_warn("🔄 periodic DNS update successful for '%.*s'",
-                                  server->pname.len, server->pname.data);
+                        /* Show discovered CNAMEs in the log */
+                        struct server_dns *dns = server->dns;
+                        if (dns != NULL && dns->naddresses > 0) {
+                            log_warn("🔄 periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
+                                      server->pname.len, server->pname.data, dns->naddresses);
+                            uint32_t k;
+                            for (k = 0; k < dns->naddresses; k++) {
+                                char addr_str[INET6_ADDRSTRLEN];
+                                const char *cname_str = "unknown";
+                                
+                                /* Convert IP to string */
+                                if (dns->addresses[k].family == AF_INET) {
+                                    struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addresses[k].addr;
+                                    inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
+                                } else if (dns->addresses[k].family == AF_INET6) {
+                                    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&dns->addresses[k].addr;
+                                    inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
+                                } else {
+                                    snprintf(addr_str, sizeof(addr_str), "unknown");
+                                }
+                                
+                                /* Get CNAME if available */
+                                if (dns->hostnames != NULL && k < dns->naddresses && dns->hostnames[k].data != NULL) {
+                                    cname_str = (const char *)dns->hostnames[k].data;
+                                }
+                                
+                                log_warn("   → addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);
+                            }
+                        } else {
+                            log_warn("🔄 periodic DNS update successful for '%.*s' (no addresses found)",
+                                      server->pname.len, server->pname.data);
+                        }
                     } else {
                         log_warn("⚠️  periodic DNS update failed for '%.*s'",
                                   server->pname.len, server->pname.data);
                     }
                 }
+                
             }
         }
     }

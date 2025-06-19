@@ -78,6 +78,8 @@ struct server_dns {
     int64_t            *last_latency_check; /* Last latency measurement */
     uint32_t           *failure_counts;   /* Failure count per address */
     int64_t            *last_seen;         /* Last time each address was returned by DNS */
+    int64_t            *last_connected;    /* Last time each address was used for connection establishment */
+    uint64_t           *request_counts;   /* Number of requests sent to each address */
     struct string      *hostnames;        /* Canonical hostname for each address (reverse DNS) */
     
     /* Enhanced health monitoring */
@@ -163,6 +165,12 @@ struct server_pool {
     unsigned           connection_pooling:1; /* enable connection pooling? */
     uint32_t           connection_warming;   /* pre-warm connections count */
     int64_t            connection_idle_timeout; /* close idle connections (usec) */
+    int64_t            connection_max_lifetime; /* force close connections after max lifetime (usec) */
+    
+    /* Dynamic connection scaling */
+    unsigned           dynamic_server_connections:1; /* enable dynamic server_connections scaling? */
+    uint32_t           max_server_connections;       /* maximum server_connections limit */
+    uint32_t           current_server_connections;   /* current effective server_connections */
     
     /* TLS/Security */
     unsigned           tls_enabled:1;        /* enable TLS? */
