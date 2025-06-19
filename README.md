@@ -1,8 +1,4 @@
 # twemproxy (nutcracker) - Enhanced with Zone-Aware Routing
-
-## 🚀 What's Different from Original Twemproxy?
-# twemproxy (nutcracker) - Enhanced with Zone-Aware Routing
-
 ## 🚀 What's Different from Original Twemproxy?
 
 This enhanced version adds **automatic zone-aware routing** for Redis caching, optimized specifically for cloud environments like AWS, GCP, and Azure. It automatically routes most traffic to same-availability-zone servers to reduce costs and latency.
@@ -17,6 +13,7 @@ This enhanced version adds **automatic zone-aware routing** for Redis caching, o
 see git repo for up to date readme https://github.com/coolnagour/twemproxy
 
 
+# docker-compose.yml example
 ```
 version: '3.3'
 
