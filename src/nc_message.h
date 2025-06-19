@@ -25,7 +25,7 @@ typedef rstatus_t (*msg_add_auth_t)(struct context *ctx, struct conn *c_conn, st
 typedef rstatus_t (*msg_fragment_t)(struct msg *, uint32_t, struct msg_tqh *);
 typedef void (*msg_coalesce_t)(struct msg *r);
 typedef rstatus_t (*msg_reply_t)(struct msg *r);
-typedef bool (*msg_failure_t)(struct msg *r);
+typedef err_t (*msg_failure_t)(struct msg *r);
 
 typedef enum msg_parse_result {
     MSG_PARSE_OK,                         /* parsing ok */
@@ -69,12 +69,16 @@ typedef enum msg_parse_result {
     ACTION( REQ_REDIS_PEXPIREAT )                                                                   \
     ACTION( REQ_REDIS_PERSIST )                                                                     \
     ACTION( REQ_REDIS_PTTL )                                                                        \
+    ACTION( REQ_REDIS_RENAME )                                                                      \
+    ACTION( REQ_REDIS_RENAMENX )                                                                    \
+    ACTION( REQ_REDIS_SCAN )                                                                        \
     ACTION( REQ_REDIS_SORT )                                                                        \
     ACTION( REQ_REDIS_TTL )                                                                         \
     ACTION( REQ_REDIS_TYPE )                                                                        \
     ACTION( REQ_REDIS_APPEND )                 /* redis requests - string */                        \
     ACTION( REQ_REDIS_BITCOUNT )                                                                    \
-    ACTION( REQ_REDIS_BITPOS )                                                                    \
+    ACTION( REQ_REDIS_BITOP )                                                                       \
+    ACTION( REQ_REDIS_BITPOS )                                                                      \
     ACTION( REQ_REDIS_DECR )                                                                        \
     ACTION( REQ_REDIS_DECRBY )                                                                      \
     ACTION( REQ_REDIS_DUMP )                                                                        \
@@ -87,6 +91,7 @@ typedef enum msg_parse_result {
     ACTION( REQ_REDIS_INCRBYFLOAT )                                                                 \
     ACTION( REQ_REDIS_MGET )                                                                        \
     ACTION( REQ_REDIS_MSET )                                                                        \
+    ACTION( REQ_REDIS_MSETNX )                                                                      \
     ACTION( REQ_REDIS_PSETEX )                                                                      \
     ACTION( REQ_REDIS_RESTORE )                                                                     \
     ACTION( REQ_REDIS_SET )                                                                         \
@@ -213,6 +218,7 @@ struct msg {
     struct mhdr          mhdr;            /* message mbuf header */
     uint32_t             mlen;            /* message length */
     int64_t              start_ts;        /* request start timestamp in usec */
+    int64_t              forward_start_ts;/* request forward timestamp in msec */
 
     int                  state;           /* current parser state */
     uint8_t              *pos;            /* parser position marker */

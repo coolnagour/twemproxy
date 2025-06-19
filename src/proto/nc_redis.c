@@ -25,6 +25,7 @@
 #define RSP_STRING(ACTION)                                                          \
     ACTION( ok,               "+OK\r\n"                                           ) \
     ACTION( pong,             "+PONG\r\n"                                         ) \
+    ACTION( unknown_command,  "-ERR unknown command\r\n"                          ) \
     ACTION( invalid_password, "-ERR invalid password\r\n"                         ) \
     ACTION( auth_required,    "-NOAUTH Authentication required\r\n"               ) \
     ACTION( no_password,      "-ERR Client sent AUTH, but no password is set\r\n" ) \
@@ -34,6 +35,88 @@
 #undef DEFINE_ACTION
 
 static rstatus_t redis_handle_auth_req(struct msg *request, struct msg *response);
+
+
+bool
+redis_readonly(struct msg *r)
+{
+    switch(r->type) {
+    case MSG_REQ_REDIS_GET:
+    case MSG_REQ_REDIS_TTL:
+    case MSG_REQ_REDIS_MGET:
+    case MSG_REQ_REDIS_PING:
+    case MSG_REQ_REDIS_AUTH:
+    case MSG_REQ_REDIS_PTTL:
+    case MSG_REQ_REDIS_TYPE:
+    case MSG_REQ_REDIS_DUMP:
+    case MSG_REQ_REDIS_STRLEN:
+    case MSG_REQ_REDIS_EXISTS:
+    case MSG_REQ_REDIS_GETRANGE:
+
+    /* bit op */
+    case MSG_REQ_REDIS_GETBIT:
+    case MSG_REQ_REDIS_BITCOUNT:
+
+    /* hash op */
+    case MSG_REQ_REDIS_HGET:
+    case MSG_REQ_REDIS_HLEN:
+    case MSG_REQ_REDIS_HVALS:
+    case MSG_REQ_REDIS_HKEYS:
+    case MSG_REQ_REDIS_HSCAN:
+    case MSG_REQ_REDIS_HGETALL:
+    case MSG_REQ_REDIS_HEXISTS:
+
+     /* list op */
+    case MSG_REQ_REDIS_LLEN:
+    case MSG_REQ_REDIS_LINDEX:
+    case MSG_REQ_REDIS_LRANGE:
+
+    /* hyperloglog op */
+    case MSG_REQ_REDIS_PFCOUNT:
+
+    /* zset op */
+    case MSG_REQ_REDIS_ZCARD:
+    case MSG_REQ_REDIS_ZRANK:
+    case MSG_REQ_REDIS_ZSCAN:
+    case MSG_REQ_REDIS_ZCOUNT:
+    case MSG_REQ_REDIS_ZRANGE:
+    case MSG_REQ_REDIS_ZSCORE:
+    case MSG_REQ_REDIS_ZREVRANK:
+    case MSG_REQ_REDIS_ZLEXCOUNT:
+    case MSG_REQ_REDIS_ZREVRANGE:
+    case MSG_REQ_REDIS_ZRANGEBYLEX:
+    case MSG_REQ_REDIS_ZRANGEBYSCORE:
+
+    /* set op */
+    case MSG_REQ_REDIS_SCARD:
+    case MSG_REQ_REDIS_SSCAN:
+    case MSG_REQ_REDIS_SDIFF:
+    case MSG_REQ_REDIS_SINTER:
+    case MSG_REQ_REDIS_SUNION:
+    case MSG_REQ_REDIS_SMEMBERS:
+    case MSG_REQ_REDIS_SISMEMBER:
+    case MSG_REQ_REDIS_SRANDMEMBER:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool
+redis_master_slave_only(struct msg *r)
+{
+    switch (r->type) {
+    case MSG_REQ_REDIS_RENAME:
+    case MSG_REQ_REDIS_RENAMENX:
+    case MSG_REQ_REDIS_SCAN:
+
+    case MSG_REQ_REDIS_BITOP:
+    case MSG_REQ_REDIS_MSETNX:
+        return true;
+    default:
+        return false;
+    }
+}
 
 /*
  * Return true, if the redis command take no key, otherwise
@@ -111,6 +194,8 @@ redis_arg1(struct msg *r)
     case MSG_REQ_REDIS_EXPIREAT:
     case MSG_REQ_REDIS_PEXPIRE:
     case MSG_REQ_REDIS_PEXPIREAT:
+    case MSG_REQ_REDIS_RENAME:
+    case MSG_REQ_REDIS_RENAMENX:
 
     case MSG_REQ_REDIS_APPEND:
     case MSG_REQ_REDIS_DECRBY:
@@ -211,9 +296,11 @@ static bool
 redis_argn(struct msg *r)
 {
     switch (r->type) {
+    case MSG_REQ_REDIS_SCAN:
     case MSG_REQ_REDIS_SORT:
 
     case MSG_REQ_REDIS_BITCOUNT:
+    case MSG_REQ_REDIS_BITOP:
     case MSG_REQ_REDIS_BITPOS:
 
     case MSG_REQ_REDIS_SET:
@@ -286,6 +373,7 @@ redis_argkvx(struct msg *r)
 {
     switch (r->type) {
     case MSG_REQ_REDIS_MSET:
+    case MSG_REQ_REDIS_MSETNX:
         return true;
 
     default:
@@ -551,6 +639,11 @@ redis_parse_req(struct msg *r)
                     break;
                 }
 
+                if (str4icmp(m, 's', 'c', 'a', 'n')) {
+                    r->type = MSG_REQ_REDIS_SCAN;
+                    break;
+                }
+
                 if (str4icmp(m, 'd', 'e', 'c', 'r')) {
                     r->type = MSG_REQ_REDIS_DECR;
                     break;
@@ -681,6 +774,11 @@ redis_parse_req(struct msg *r)
                 break;
 
             case 5:
+                if (str5icmp(m, 'b', 'i', 't', 'o', 'p')) {
+                    r->type = MSG_REQ_REDIS_BITOP;
+                    break;
+                }
+
                 if (str5icmp(m, 'h', 'k', 'e', 'y', 's')) {
                     r->type = MSG_REQ_REDIS_HKEYS;
                     break;
@@ -774,6 +872,11 @@ redis_parse_req(struct msg *r)
                 break;
 
             case 6:
+                if (str6icmp(m, 'r', 'e', 'n', 'a', 'm', 'e')) {
+                    r->type = MSG_REQ_REDIS_RENAME;
+                    break;
+                }
+
                 if (str6icmp(m, 'a', 'p', 'p', 'e', 'n', 'd')) {
                     r->type = MSG_REQ_REDIS_APPEND;
                     break;
@@ -807,6 +910,11 @@ redis_parse_req(struct msg *r)
                 if (str6icmp(m, 'g', 'e', 't', 's', 'e', 't')) {
                     r->type = MSG_REQ_REDIS_GETSET;
                     break;
+                }
+
+                if (str6icmp(m, 'm', 's', 'e', 't', 'n', 'x')) {
+                   r->type = MSG_REQ_REDIS_MSETNX;
+                   break;
                 }
 
                 if (str6icmp(m, 'p', 's', 'e', 't', 'e', 'x')) {
@@ -942,6 +1050,11 @@ redis_parse_req(struct msg *r)
             case 8:
                 if (str8icmp(m, 'e', 'x', 'p', 'i', 'r', 'e', 'a', 't')) {
                     r->type = MSG_REQ_REDIS_EXPIREAT;
+                    break;
+                }
+
+                if (str8icmp(m, 'r', 'e', 'n', 'a', 'm', 'e', 'n', 'x')) {
+                    r->type = MSG_REQ_REDIS_RENAMENX;
                     break;
                 }
 
@@ -2251,8 +2364,8 @@ error:
 }
 
 /*
- * Return true, if redis replies with a transient server failure response,
- * otherwise return false
+ * Return error type, if redis replies with a transient server failure response,
+ * otherwise return 0
  *
  * Transient failures on redis are scenarios when it is temporarily
  * unresponsive and responds with the following protocol specific error
@@ -2263,7 +2376,7 @@ error:
  *
  * See issue: https://github.com/twitter/twemproxy/issues/369
  */
-bool
+err_t
 redis_failure(struct msg *r)
 {
     ASSERT(!r->request);
@@ -2272,13 +2385,13 @@ redis_failure(struct msg *r)
     case MSG_RSP_REDIS_ERROR_OOM:
     case MSG_RSP_REDIS_ERROR_BUSY:
     case MSG_RSP_REDIS_ERROR_LOADING:
-        return true;
+        return -1 * r->type;
 
     default:
         break;
     }
 
-    return false;
+    return 0;
 }
 
 /*
@@ -2694,10 +2807,13 @@ redis_reply(struct msg *r)
         return msg_append(response, rsp_auth_required.data, rsp_auth_required.len);
     }
 
+    if (redis_master_slave_only(r)) {
+        return msg_append(response, rsp_unknown_command.data, rsp_unknown_command.len);
+    }
+
     switch (r->type) {
     case MSG_REQ_REDIS_PING:
         return msg_append(response, rsp_pong.data, rsp_pong.len);
-
     default:
         NOT_REACHED();
         return NC_ERROR;
@@ -2946,5 +3062,23 @@ redis_swallow_msg(struct conn *conn, struct msg *pmsg, struct msg *msg)
         log_warn("SELECT %d failed on %s | %s: %s",
                  conn_pool->redis_db, conn_pool->name.data,
                  conn_server->name.data, message);
+    }
+}
+
+char*
+redis_failure_msg(err_t err)
+{
+    switch (-1 * err) {
+        case MSG_RSP_REDIS_ERROR_OOM:
+            return "-OOM command not allowed when used memory > 'maxmemory'.";
+
+        case MSG_RSP_REDIS_ERROR_BUSY:
+            return "-BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.";
+
+        case MSG_RSP_REDIS_ERROR_LOADING:
+            return "-LOADING Redis is loading the dataset in memory";
+
+        default:
+            return "-ERR unknown";
     }
 }

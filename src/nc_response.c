@@ -17,6 +17,7 @@
 
 #include <nc_core.h>
 #include <nc_server.h>
+#include <nc_process.h>
 
 struct msg *
 rsp_get(struct conn *conn)
@@ -142,7 +143,7 @@ static bool
 rsp_filter(struct context *ctx, struct conn *conn, struct msg *msg)
 {
     struct msg *pmsg;
-
+    err_t  err;
     ASSERT(!conn->client && !conn->proxy);
 
     if (msg_empty(msg)) {
@@ -192,12 +193,12 @@ rsp_filter(struct context *ctx, struct conn *conn, struct msg *msg)
      * If auto_eject_host is enabled, this will also update the failure_count
      * and eject the server if it exceeds the failure_limit
      */
-    if (msg->failure(msg)) {
+    if ((err = msg->failure(msg)) != 0) {
         log_debug(LOG_INFO, "server failure rsp %"PRIu64" len %"PRIu32" "
                   "type %d on s %d", msg->id, msg->mlen, msg->type, conn->sd);
         rsp_put(msg);
 
-        conn->err = EINVAL;
+        conn->err = err;
         conn->done = 1;
 
         return true;
@@ -275,15 +276,21 @@ void
 rsp_recv_done(struct context *ctx, struct conn *conn, struct msg *msg,
               struct msg *nmsg)
 {
+    struct msg *pmsg;
+
     ASSERT(!conn->client && !conn->proxy);
     ASSERT(msg != NULL && conn->rmsg == msg);
     ASSERT(!msg->request);
     ASSERT(msg->owner == conn);
     ASSERT(nmsg == NULL || !nmsg->request);
 
+    pmsg = TAILQ_FIRST(&conn->omsg_q);
+    if (pmsg) {
+        stats_server_record_latency(ctx, conn->owner, nc_msec_now()-pmsg->forward_start_ts);
+    }
+
     /* enqueue next message (response), if any */
     conn->rmsg = nmsg;
-
     if (rsp_filter(ctx, conn, msg)) {
         return;
     }
@@ -352,6 +359,7 @@ rsp_send_next(struct context *ctx, struct conn *conn)
 void
 rsp_send_done(struct context *ctx, struct conn *conn, struct msg *msg)
 {
+    int64_t req_time;
     struct msg *pmsg; /* peer message (request) */
 
     ASSERT(conn->client && !conn->proxy);
@@ -369,4 +377,13 @@ rsp_send_done(struct context *ctx, struct conn *conn, struct msg *msg)
     conn->dequeue_outq(ctx, conn, pmsg);
 
     req_put(pmsg);
+
+    if (pm_terminate) {
+        conn->done = 1;
+    }
+    /* only record the request's latency, and ignore the fragment */
+    if (pmsg->frag_id == 0 || pmsg->frag_owner == pmsg) {
+        req_time = nc_msec_now()-pmsg->start_ts/1000;
+        stats_pool_record_latency(conn_to_ctx(conn), conn->owner, req_time);
+    }
 }

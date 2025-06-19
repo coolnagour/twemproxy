@@ -1,0 +1,39 @@
+version: '3.3'
+
+services:
+  # Twemproxy with zone-aware routing
+  twemproxy:
+    image: bobbymaher/twemproxy:2.1.0
+    ports:
+      - "6378:6378"  # Redis read port
+      - "6379:6379"  # Redis write port
+      - "22222:22222" # Stats port
+    environment:
+      # Redis server hostnames (can be DNS names for dynamic resolution)
+      WRITE_HOST: "staging-dispatch-api.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379"
+      READ_HOST: "staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com.com:6379"
+
+      # Zone-aware routing configuration
+      ZONE_WEIGHT: "95"                    # % traffic to same-AZ
+      DNS_RESOLVE_INTERVAL: "10"           # DNS refresh every x seconds
+      DNS_EXPIRATION_MINUTES: "15"         # Keep IPs for x minutes after not seen in DNS. Elasticache will round robin the DNS for read only endpoint in a strage way, so keep this high enough
+      DNS_HEALTH_CHECK_INTERVAL: "10"     # Health check every x seconds
+      
+      # Connection management  
+      SERVER_CONNECTIONS: "3"             # Allow multiple connections per server for load balancing
+      CONNECTION_MAX_LIFETIME: "60"       # Close connections after x seconds to trigger server re-selection, lower improves load balancing
+      DYNAMIC_SERVER_CONNECTIONS: "true"  # Auto-scale connections based on DNS address count
+      MAX_SERVER_CONNECTIONS: "8"         # Maximum connections limit for dynamic scaling
+    volumes:
+      - ./logs:/var/log/twemproxy # you will need to logrotate this
+    networks:
+      - redis-network
+    restart: unless-stopped
+
+
+networks:
+  redis-network:
+    driver: bridge
+
+volumes:
+  logs:

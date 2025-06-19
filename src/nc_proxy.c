@@ -99,6 +99,11 @@ proxy_reuse(struct conn *p)
     case AF_INET:
     case AF_INET6:
         status = nc_set_reuseaddr(p->sd);
+#ifdef NC_HAVE_REUSEPORT
+        if (status == NC_OK) {
+            status = nc_set_reuseport(p->sd);
+        }
+#endif
         break;
 
     case AF_UNIX:
@@ -127,6 +132,16 @@ proxy_listen(struct context *ctx, struct conn *p)
     struct server_pool *pool = p->owner;
 
     ASSERT(p->proxy);
+
+    /*
+    * NOTE: only one worker can listen and bind to unix socket,
+    * let's pin the unix socket to first worker, so we just
+    * create socket here when the family type is AF_UNIX.
+    * do nothing in other workers when setup the proxy listen.
+    */
+    if (p->family == AF_UNIX && ctx->id != 0) {
+        return NC_OK;
+    }
 
     p->sd = socket(p->family, SOCK_STREAM, 0);
     if (p->sd < 0) {
@@ -173,22 +188,6 @@ proxy_listen(struct context *ctx, struct conn *p)
         return NC_ERROR;
     }
 
-    status = event_add_conn(ctx->evb, p);
-    if (status < 0) {
-        log_error("event add conn p %d on addr '%.*s' failed: %s",
-                  p->sd, pool->addrstr.len, pool->addrstr.data,
-                  strerror(errno));
-        return NC_ERROR;
-    }
-
-    status = event_del_out(ctx->evb, p);
-    if (status < 0) {
-        log_error("event del out p %d on addr '%.*s' failed: %s",
-                  p->sd, pool->addrstr.len, pool->addrstr.data,
-                  strerror(errno));
-        return NC_ERROR;
-    }
-
     return NC_OK;
 }
 
@@ -198,6 +197,11 @@ proxy_each_init(void *elem, void *data)
     rstatus_t status;
     struct server_pool *pool = elem;
     struct conn *p;
+
+    if (pool->p_conn != NULL) {
+        // this server pool's listener has been created in the previous cycle, we are here because of reloading, skip
+        return NC_OK;
+    }
 
     p = conn_get_proxy(pool);
     if (p == NULL) {
@@ -228,13 +232,67 @@ proxy_init(struct context *ctx)
 
     status = array_each(&ctx->pool, proxy_each_init, NULL);
     if (status != NC_OK) {
-        proxy_deinit(ctx);
         return status;
     }
 
     log_debug(LOG_VVERB, "init proxy with %"PRIu32" pools",
               array_n(&ctx->pool));
 
+    return NC_OK;
+}
+
+rstatus_t
+proxy_each_post_init(void *elem, void *data)
+{
+    rstatus_t status;
+    struct server_pool *pool = elem;
+    struct conn *p;
+
+    p = pool->p_conn;
+    /*
+    * NOTE: only one worker can listen and bind to unix socket,
+    * let's pin the unix socket to first worker. 
+    * so the other workers were not bind the socket indeed,
+    * don't attach the event to those fd.
+    */
+    if (p->family == AF_UNIX && pool->ctx->id != 0) {
+        return NC_OK;
+    }
+    status = event_add_conn(pool->ctx->evb, p);
+    if (status < 0) {
+        log_error("event add conn p %d on addr '%.*s' failed: %s",
+                  p->sd, pool->addrstr.len, pool->addrstr.data,
+                  strerror(errno));
+        return NC_ERROR;
+    }
+
+    status = event_del_out(pool->ctx->evb, p);
+    if (status < 0) {
+        log_error("event del out p %d on addr '%.*s' failed: %s",
+                  p->sd, pool->addrstr.len, pool->addrstr.data,
+                  strerror(errno));
+        return NC_ERROR;
+    }
+
+    return NC_OK;
+}
+
+// Add proxy's listening sockets to event pool
+rstatus_t
+proxy_post_init(struct context *ctx)
+{
+    rstatus_t status;
+
+    ASSERT(array_n(&ctx->pool) != 0);
+
+    status = array_each(&ctx->pool, proxy_each_post_init, NULL);
+    if (status != NC_OK) {
+        proxy_deinit(ctx);
+        return status;
+    }
+
+    log_debug(LOG_VVERB, "post init proxy with %"PRIu32" pools",
+              array_n(&ctx->pool));
     return NC_OK;
 }
 
@@ -268,6 +326,29 @@ proxy_deinit(struct context *ctx)
               array_n(&ctx->pool));
 }
 
+rstatus_t
+proxy_each_unaccept(void *elem, void *data)
+{
+    struct server_pool *pool = elem;
+    struct conn *p;
+    struct context *ctx = pool->ctx;
+
+    p = pool->p_conn;
+    if (p != NULL && ctx != NULL) {
+        /*
+        * NOTE: only one worker can listen and bind to unix socket,
+        * let's pin the unix socket to first worker. 
+        * so none of events were attached to the other workers.
+        */
+        if (p->family != AF_UNIX || ctx->id == 0) {
+            event_del_conn(ctx->evb, p);
+            proxy_close(ctx, p);
+        }
+    }
+
+    return NC_OK;
+}
+
 static rstatus_t
 proxy_accept(struct context *ctx, struct conn *p)
 {
@@ -294,7 +375,7 @@ proxy_accept(struct context *ctx, struct conn *p)
                 return NC_OK;
             }
 
-            /* 
+            /*
              * Workaround of https://github.com/twitter/twemproxy/issues/97
              *
              * We should never reach here because the check for conn_ncurr_cconn()
@@ -326,9 +407,21 @@ proxy_accept(struct context *ctx, struct conn *p)
         break;
     }
 
+    // check total client connection count
     if (conn_ncurr_cconn() >= ctx->max_ncconn) {
-        log_debug(LOG_CRIT, "client connections %"PRIu32" exceed limit %"PRIu32,
+        log_warn("client connections %"PRIu32" exceed limit %"PRIu32,
                   conn_ncurr_cconn(), ctx->max_ncconn);
+        status = close(sd);
+        if (status < 0) {
+            log_error("close c %d failed, ignored: %s", sd, strerror(errno));
+        }
+        return NC_OK;
+    }
+
+    // check client connection of a server pool count
+    if (pool->nc_conn_q >= pool->client_connections) {
+        log_warn("server pool client connections %"PRIu32" exceed limit %"PRIu32,
+                 pool->nc_conn_q, pool->client_connections);
         status = close(sd);
         if (status < 0) {
             log_error("close c %d failed, ignored: %s", sd, strerror(errno));

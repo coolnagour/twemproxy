@@ -1,67 +1,42 @@
-alpha:
-  listen: 127.0.0.1:22121
-  hash: fnv1a_64
-  distribution: ketama
-  auto_eject_hosts: true
-  redis: true
-  server_retry_timeout: 2000
-  server_failure_limit: 1
-  servers:
-   - 127.0.0.1:6379:1
+# Basic configuration for Redis caching with zone-aware routing
+# This configuration routes most traffic to same-AZ servers for cost optimization
 
-beta:
-  listen: 127.0.0.1:22122
-  hash: fnv1a_64
-  hash_tag: "{}"
-  distribution: ketama
-  auto_eject_hosts: false
-  timeout: 400
-  redis: true
-  servers:
-   - 127.0.0.1:6380:1 server1
-   - 127.0.0.1:6381:1 server2
-   - 127.0.0.1:6382:1 server3
-   - 127.0.0.1:6383:1 server4
+global:
+    worker_processes: auto      # num of workers, fallback to single process model while worker_processes is 0
+    max_openfiles: 102400       # max num of open files in every worker process
+    user: twemproxy             # user of worker's process, master process should be setup with root
+    group: twemproxy            # group of worker's process
+    worker_shutdown_timeout: 30 # terminate the old worker after worker_shutdown_timeout, unit is second
 
-gamma:
-  listen: 127.0.0.1:22123
-  hash: fnv1a_64
-  distribution: ketama
-  timeout: 400
-  backlog: 1024
-  preconnect: true
-  auto_eject_hosts: true
-  server_retry_timeout: 2000
-  server_failure_limit: 3
-  servers:
-   - 127.0.0.1:11212:1
-   - 127.0.0.1:11213:1
+pools:
+    # Redis write pool (single primary endpoint)
+    write:
+        listen: 127.0.0.1:6379
+        auto_eject_hosts: true
+        redis: true
+        timeout: 2000
+        server_retry_timeout: 1000
+        server_failure_limit: 5
+        server_connections: 1
+        servers:
+            - my-redis-primary.cache.amazonaws.com:6379:1
 
-delta:
-  listen: 127.0.0.1:22124
-  hash: fnv1a_64
-  distribution: ketama
-  timeout: 100
-  auto_eject_hosts: true
-  server_retry_timeout: 2000
-  server_failure_limit: 1
-  servers:
-   - 127.0.0.1:11214:1
-   - 127.0.0.1:11215:1
-   - 127.0.0.1:11216:1
-   - 127.0.0.1:11217:1
-   - 127.0.0.1:11218:1
-   - 127.0.0.1:11219:1
-   - 127.0.0.1:11220:1
-   - 127.0.0.1:11221:1
-   - 127.0.0.1:11222:1
-   - 127.0.0.1:11223:1
+    # Redis read pool with zone-aware routing
+    read:
+        listen: 127.0.0.1:6378
+        distribution: ketama
+        auto_eject_hosts: true
+        redis: true
+        timeout: 2000
+        server_retry_timeout: 10000
+        server_failure_limit: 1
+        server_connections: 1
 
-omega:
-  listen: /tmp/gamma
-  hash: hsieh
-  distribution: ketama
-  auto_eject_hosts: false
-  servers:
-   - 127.0.0.1:11214:100000
-   - 127.0.0.1:11215:1
+        # Zone-aware routing - sends 99% traffic to same-AZ servers
+        zone_aware: true
+        zone_weight: 99             # 99% preference for same-AZ servers
+        dns_resolve_interval: 30    # Re-check DNS every 30 seconds
+
+        # Read replica endpoint (automatically discovers all replicas)
+        servers:
+            - my-redis-ro.cache.amazonaws.com:6379:1

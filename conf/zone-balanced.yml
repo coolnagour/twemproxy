@@ -1,0 +1,54 @@
+# Example: Balanced zone-aware routing
+# This configuration balances performance and cost with moderate same-AZ preference
+
+global:
+    worker_processes: auto
+    max_openfiles: 102400
+    user: twemproxy
+    group: twemproxy
+    worker_shutdown_timeout: 30
+
+pools:
+    # Primary cache pool with balanced zone routing
+    redis_primary:
+        listen: 127.0.0.1:6379
+        auto_eject_hosts: true
+        redis: true
+        timeout: 2000
+        server_retry_timeout: 5000
+        server_failure_limit: 2
+        server_connections: 1
+
+        # Balanced zone-aware routing
+        zone_aware: true
+        zone_weight: 70             # 70% same-AZ, 30% distributed
+        dns_resolve_interval: 15    # More frequent DNS checks
+
+        # Enhanced connection management
+        connection_pooling: true
+        connection_warming: 2
+        connection_idle_timeout: 300
+
+        servers:
+            - redis-cluster-ro.example.com:6379:1
+
+    # Session cache with high same-AZ preference
+    redis_sessions:
+        listen: 127.0.0.1:6380
+        auto_eject_hosts: true
+        redis: true
+        timeout: 1000
+        server_retry_timeout: 2000
+        server_failure_limit: 1
+        server_connections: 1
+
+        # High same-AZ preference for sessions
+        zone_aware: true
+        zone_weight: 90             # 90% same-AZ for session locality
+        dns_resolve_interval: 60
+
+        connection_pooling: true
+        connection_warming: 1
+
+        servers:
+            - sessions-redis-ro.example.com:6379:1

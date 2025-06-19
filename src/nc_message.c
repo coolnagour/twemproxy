@@ -220,6 +220,7 @@ done:
     STAILQ_INIT(&msg->mhdr);
     msg->mlen = 0;
     msg->start_ts = 0;
+    msg->forward_start_ts = 0;
 
     msg->state = 0;
     msg->pos = NULL;
@@ -312,9 +313,7 @@ msg_get(struct conn *conn, bool request, bool redis)
         msg->post_coalesce = memcache_post_coalesce;
     }
 
-    if (log_loggable(LOG_NOTICE) != 0) {
-        msg->start_ts = nc_usec_now();
-    }
+    msg->start_ts = nc_usec_now();
 
     log_debug(LOG_VVERB, "get msg %p id %"PRIu64" request %d owner sd %d",
               msg, msg->id, msg->request, conn->sd);
@@ -345,8 +344,11 @@ msg_get_error(bool redis, err_t err)
         return NULL;
     }
     mbuf_insert(&msg->mhdr, mbuf);
-
-    n = nc_scnprintf(mbuf->last, mbuf_size(mbuf), "%s %s"CRLF, protstr, errstr);
+    if (redis && err < 0) {
+        n = nc_scnprintf(mbuf->last, mbuf_size(mbuf), "%s"CRLF, redis_failure_msg(err));
+    } else {
+        n = nc_scnprintf(mbuf->last, mbuf_size(mbuf), "%s %s"CRLF, protstr, errstr);
+    }
     mbuf->last += n;
     msg->mlen = (uint32_t)n;
 

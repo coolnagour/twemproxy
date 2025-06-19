@@ -78,9 +78,13 @@
 #define nc_atoi(_line, _n)          \
     _nc_atoi((uint8_t *)_line, (size_t)_n)
 
+void* nc_shared_mem_alloc(size_t size);
+void nc_shared_mem_free(void *p, size_t size);
+
 int nc_set_blocking(int sd);
 int nc_set_nonblocking(int sd);
 int nc_set_reuseaddr(int sd);
+int nc_set_reuseport(int sd);
 int nc_set_tcpnodelay(int sd);
 int nc_set_linger(int sd, int timeout);
 int nc_set_sndbuf(int sd, int size);
@@ -209,8 +213,11 @@ struct sockinfo {
 };
 
 int nc_resolve(struct string *name, int port, struct sockinfo *si);
+int nc_resolve_multi(struct string *name, int port, struct sockinfo **addresses, uint32_t *naddresses, uint32_t max_addresses);
+int nc_resolve_multi_with_hostnames(struct string *name, int port, struct sockinfo **addresses, char ***hostnames, uint32_t *naddresses, uint32_t max_addresses);
 char *nc_unresolve_addr(struct sockaddr *addr, socklen_t addrlen);
 char *nc_unresolve_peer_desc(int sd);
 char *nc_unresolve_desc(int sd);
 
+rstatus_t nc_set_timer(int ms, int interval);
 #endif

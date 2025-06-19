@@ -38,6 +38,18 @@
     ACTION( server_timedout,        STATS_COUNTER,      "# timeouts on server connections")                         \
     ACTION( server_connections,     STATS_GAUGE,        "# active server connections")                              \
     ACTION( server_ejected_at,      STATS_TIMESTAMP,    "timestamp when server was ejected in usec since epoch")    \
+    /* dynamic DNS and latency stats */                                                                            \
+    ACTION( dns_addresses,          STATS_GAUGE,        "# DNS resolved addresses for dynamic servers")             \
+    ACTION( dns_resolves,           STATS_COUNTER,      "# DNS resolution attempts")                                \
+    ACTION( dns_failures,           STATS_COUNTER,      "# DNS resolution failures")                               \
+    ACTION( latency_fastest_sel,    STATS_COUNTER,      "# times fastest server was selected")                     \
+    ACTION( latency_distributed_sel,STATS_COUNTER,      "# times distributed server was selected")                 \
+    ACTION( current_latency_us,     STATS_GAUGE,        "current connection latency in microseconds")              \
+    ACTION( last_dns_resolved_at,   STATS_TIMESTAMP,    "timestamp when DNS was last resolved in usec")            \
+    /* zone-aware routing stats */                                                                                 \
+    ACTION( same_zone_selections,   STATS_COUNTER,      "# times same-zone server was selected")                   \
+    ACTION( cross_zone_selections,  STATS_COUNTER,      "# times cross-zone server was selected")                  \
+    ACTION( zones_detected,         STATS_GAUGE,        "number of latency-based zones detected")                  \
     /* data behavior */                                                                                             \
     ACTION( requests,               STATS_COUNTER,      "# requests")                                               \
     ACTION( request_bytes,          STATS_COUNTER,      "total request bytes")                                      \
@@ -50,7 +62,9 @@
 
 #define STATS_ADDR      "0.0.0.0"
 #define STATS_PORT      22222
-#define STATS_INTERVAL  (30 * 1000) /* in msec */
+#define STATS_INTERVAL  (10 * 1000) /* in msec */
+
+typedef void (*stats_loop_t)(void *, void *);
 
 typedef enum stats_type {
     STATS_INVALID,
@@ -70,14 +84,16 @@ struct stats_metric {
 };
 
 struct stats_server {
-    struct string name;   /* server name (ref) */
-    struct array  metric; /* stats_metric[] for server codec */
+    struct string name;     /* server name (ref) */
+    struct array  metric;   /* stats_metric[] for server codec */
+    struct array  latency;  /* lantency[] for server request latency */
 };
 
 struct stats_pool {
     struct string name;   /* pool name (ref) */
     struct array  metric; /* stats_metric[] for pool codec */
     struct array  server; /* stats_server[] */
+    struct array  latency;  /* lantency[] for server request latency */
 };
 
 struct stats_buffer {
@@ -87,12 +103,15 @@ struct stats_buffer {
 };
 
 struct stats {
+    struct context      *owner;
+
     uint16_t            port;            /* stats monitoring port */
     int                 interval;        /* stats aggregation interval */
     struct string       addr;            /* stats monitoring address */
 
     int64_t             start_ts;        /* start timestamp of nutcracker */
     struct stats_buffer buf;             /* output buffer */
+    stats_loop_t        loop;            /* loop handler */
 
     struct array        current;         /* stats_pool[] (a) */
     struct array        shadow;          /* stats_pool[] (b) */
@@ -109,6 +128,7 @@ struct stats {
     struct string       version;         /* version */
     struct string       uptime_str;      /* uptime string */
     struct string       timestamp_str;   /* timestamp string */
+    struct string       pid_str;         /* pid string */
     struct string       ntotal_conn_str; /* total connections string */
     struct string       ncurr_conn_str;  /* curr connections string */
 
@@ -172,6 +192,18 @@ typedef enum stats_server_field {
      _stats_server_set_ts(_ctx, _server, STATS_SERVER_##_name, _val);   \
 } while (0)
 
+#define stats_server_set(_ctx, _server, _name, _val) do {               \
+    _stats_server_set(_ctx, _server, STATS_SERVER_##_name, _val);       \
+} while (0)
+
+#define stats_server_record_latency(_ctx, _server, _val) do {           \
+     _stats_server_record_latency(_ctx, _server, _val);                 \
+} while (0)
+
+#define stats_pool_record_latency(_ctx, _pool, _val) do {           \
+     _stats_pool_record_latency(_ctx, _pool, _val);                 \
+} while (0)
+
 #else
 
 #define stats_pool_incr(_ctx, _pool, _name)
@@ -190,11 +222,20 @@ typedef enum stats_server_field {
 
 #define stats_server_decr_by(_ctx, _server, _name, _val)
 
+#define stats_server_set(_ctx, _server, _name, _val)
+
+#define stats_server_set_ts(_ctx, _server, _name, _val)
+
+#define stats_server_record_latency(_ctx, _server, _val)
+
+#define stats_pool_record_latency(_ctx, _pool, _val)
+
 #endif
 
 #define stats_enabled   NC_STATS
 
 void stats_describe(void);
+void stats_show_read_hosts(struct array *server_pool);
 
 void _stats_pool_incr(struct context *ctx, struct server_pool *pool, stats_pool_field_t fidx);
 void _stats_pool_decr(struct context *ctx, struct server_pool *pool, stats_pool_field_t fidx);
@@ -207,9 +248,16 @@ void _stats_server_decr(struct context *ctx, struct server *server, stats_server
 void _stats_server_incr_by(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_decr_by(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
 void _stats_server_set_ts(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
+void _stats_server_set(struct context *ctx, struct server *server, stats_server_field_t fidx, int64_t val);
+void _stats_server_record_latency(struct context *ctx, struct server *server, int64_t latency);
+void _stats_pool_record_latency(struct context *ctx, struct server_pool *pool, int64_t latency);
 
-struct stats *stats_create(uint16_t stats_port, char *stats_ip, int stats_interval, char *source, struct array *server_pool);
+struct stats *stats_create(uint16_t stats_port, char *stats_ip, int stats_interval, char *source, struct array *server_pool, stats_loop_t loop);
 void stats_destroy(struct stats *stats);
 void stats_swap(struct stats *stats);
+void stats_loop_callback(void *arg1, void *arg2);
+void stats_master_loop_callback(void *arg1, void *arg2);
+rstatus_t stats_shared_memory_init(struct stats *stats, int processes);
+void stats_shared_memory_deinit(struct stats *stats);
 
 #endif

@@ -17,9 +17,13 @@
 
 #include <stdlib.h>
 #include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <nc_core.h>
+#include <nc.h>
 #include <nc_signal.h>
+#include <nc_process.h>
 
 static struct signal signals[] = {
     { SIGUSR1, "SIGUSR1", 0,                 signal_handler },
@@ -28,8 +32,11 @@ static struct signal signals[] = {
     { SIGTTOU, "SIGTTOU", 0,                 signal_handler },
     { SIGHUP,  "SIGHUP",  0,                 signal_handler },
     { SIGINT,  "SIGINT",  0,                 signal_handler },
+    { SIGTERM, "SIGTERM", 0,                 signal_handler },
     { SIGSEGV, "SIGSEGV", (int)SA_RESETHAND, signal_handler },
+    { SIGCHLD, "SIGCHLD", 0,                 signal_handler },
     { SIGPIPE, "SIGPIPE", 0,                 SIG_IGN },
+    { SIGALRM, "SIGALRM", 0,                 signal_handler },
     { 0,        NULL,     0,                 NULL }
 };
 
@@ -84,6 +91,11 @@ signal_handler(int signo)
 
     switch (signo) {
     case SIGUSR1:
+        actionstr = ", reopening log file";
+        action = log_reopen;
+        if (pm_myrole == ROLE_MASTER) {
+            nc_signal_workers(&master_nci->workers, NC_CMD_LOG_REOPEN);
+        }
         break;
 
     case SIGUSR2:
@@ -91,28 +103,66 @@ signal_handler(int signo)
 
     case SIGTTIN:
         actionstr = ", up logging level";
+        if (pm_myrole == ROLE_MASTER) {
+            nc_signal_workers(&master_nci->workers, NC_CMD_LOG_LEVEL_UP);
+        }
         action = log_level_up;
         break;
 
     case SIGTTOU:
         actionstr = ", down logging level";
         action = log_level_down;
+        if (pm_myrole == ROLE_MASTER) {
+            nc_signal_workers(&master_nci->workers, NC_CMD_LOG_LEVEL_DOWN);
+        }
         break;
 
     case SIGHUP:
-        actionstr = ", reopening log file";
-        action = log_reopen;
+        if (pm_myrole == ROLE_MASTER) {
+            actionstr = ", reload config";
+            action = nc_reload_config;
+        }
         break;
 
     case SIGINT:
-        done = true;
+        if (pm_myrole == ROLE_MASTER) {
+            nc_signal_workers(&master_nci->workers, NC_CMD_QUIT);
+            wait(NULL);
+            done = true;
+        } else {
+            pm_quit = true;
+        }
         actionstr = ", exiting";
+        break;
+
+    case SIGTERM:
+        if (pm_myrole == ROLE_MASTER) {
+            nc_signal_workers(&master_nci->workers, NC_CMD_TERMINATE);
+            wait(NULL);
+            done = true;
+        } else {
+            pm_terminate = true;
+        }
+        actionstr = ", terminating";
         break;
 
     case SIGSEGV:
         log_stacktrace();
         actionstr = ", core dumping";
         raise(SIGSEGV);
+        break;
+    case SIGALRM:
+        if (pm_terminate) {
+            pm_quit = true;
+            pm_terminate = false;
+            actionstr = ", time's up, quit";
+        }
+        break;
+
+    case SIGCHLD:
+        ASSERT(pm_myrole == ROLE_MASTER);
+        actionstr = ", reaping child";
+        action = nc_reap_worker;
         break;
 
     default:
@@ -126,6 +176,7 @@ signal_handler(int signo)
     }
 
     if (done) {
+        nc_post_run(master_nci);
         exit(1);
     }
 }

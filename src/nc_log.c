@@ -22,9 +22,24 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#include <nc_core.h>
+#include <nc_process.h>
 
 static struct logger logger;
+
+const char * log_level_names[LOG_LEVEN_N] = {
+    "EMERG",
+    "ALERT",
+    "CRIT",
+    "ERR",
+    "WARN",
+    "NOTICE",
+    "INFO",
+    "DEBUG",
+    "VERB",
+    "VVERB",
+    "VVVERB",
+    "PVERB"
+};
 
 int
 log_init(int level, char *name)
@@ -129,7 +144,7 @@ log_loggable(int level)
 }
 
 void
-_log(const char *file, int line, int panic, const char *fmt, ...)
+_log(int level, const char *file, int line, int panic, const char *fmt, ...)
 {
     struct logger *l = &logger;
     int len, size, errno_save;
@@ -137,9 +152,22 @@ _log(const char *file, int line, int panic, const char *fmt, ...)
     va_list args;
     ssize_t n;
     struct timeval tv;
+    char role[2] = {0};
 
     if (l->fd < 0) {
         return;
+    }
+
+    switch (pm_myrole) {
+    case ROLE_MASTER:
+        role[0] = 'M';
+        break;
+    case ROLE_WORKER:
+        role[0] = 'S';
+        break;
+    default:
+        role[0] = 'U';
+        break;
     }
 
     errno_save = errno;
@@ -150,7 +178,8 @@ _log(const char *file, int line, int panic, const char *fmt, ...)
     buf[len++] = '[';
     len += nc_strftime(buf + len, size - len, "%Y-%m-%d %H:%M:%S.", localtime(&tv.tv_sec));
     len += nc_scnprintf(buf + len, size - len, "%03ld", tv.tv_usec/1000);
-    len += nc_scnprintf(buf + len, size - len, "] %s:%d ", file, line);
+    len += nc_scnprintf(buf + len, size - len, "] [%s] [%s] %d %s:%d ",
+        log_level_names[level], role, getpid(), file, line);
 
     va_start(args, fmt);
     len += nc_vscnprintf(buf + len, size - len, fmt, args);
@@ -286,7 +315,7 @@ _log_safe(const char *fmt, ...)
     len = 0;            /* length of output buffer */
     size = LOG_MAX_LEN; /* size of output buffer */
 
-    len += nc_safe_snprintf(buf + len, size - len, "[.......................] ");
+    len += nc_safe_snprintf(buf + len, size - len, "[.......................] %d ", getpid());
 
     va_start(args, fmt);
     len += nc_safe_vsnprintf(buf + len, size - len, fmt, args);
@@ -315,7 +344,7 @@ _log_stderr_safe(const char *fmt, ...)
     len = 0;            /* length of output buffer */
     size = LOG_MAX_LEN; /* size of output buffer */
 
-    len += nc_safe_snprintf(buf + len, size - len, "[.......................] ");
+    len += nc_safe_snprintf(buf + len, size - len, "[.......................] %d ", getpid());
 
     va_start(args, fmt);
     len += nc_safe_vsnprintf(buf + len, size - len, fmt, args);

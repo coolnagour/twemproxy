@@ -1,6 +1,7 @@
 /*
  * twemproxy - A fast and lightweight proxy for memcached protocol.
  * Copyright (C) 2011 Twitter, Inc.
+ * Copyright (C) 2024-2025 coolnagour
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +19,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
 #include <nc_core.h>
 #include <nc_server.h>
+#include <nc_process.h>
 
+static struct string pools_tag_key = string("pools");
+static struct string servers_tag_key = string("servers");
+static struct string server_latency_key = string("server_latency");
+static struct string req_latency_key = string("request_latency");
+static int64_t latency_buckets[] =  {
+    1, 10, 20, 50, 100, 200, 500, 1000, 2000, 3000, INT64_MAX
+};
+
+#define NBUCKET (sizeof(latency_buckets)/sizeof(latency_buckets[0]))
 struct stats_desc {
     char *name; /* stats name */
     char *desc; /* stats description */
@@ -51,6 +61,8 @@ static struct stats_desc stats_server_desc[] = {
 };
 #undef DEFINE_ACTION
 
+static rstatus_t stats_add_dns_hosts(struct stats *st, struct string *server_name);
+
 void
 stats_describe(void)
 {
@@ -69,6 +81,24 @@ stats_describe(void)
         log_stderr("  %-20s\"%s\"", stats_server_desc[i].name,
                    stats_server_desc[i].desc);
     }
+
+    log_stderr("");
+    log_stderr("enhanced dynamic DNS & latency features:");
+    log_stderr("  dns_addresses        \"# DNS resolved addresses for dynamic servers\"");
+    log_stderr("  dns_resolves         \"# DNS resolution attempts\"");
+    log_stderr("  dns_failures         \"# DNS resolution failures\"");
+    log_stderr("  latency_fastest_sel  \"# times fastest server was selected\"");
+    log_stderr("  latency_distributed_sel \"# times distributed server was selected\"");
+    log_stderr("  current_latency_us   \"current connection latency in microseconds\"");
+    log_stderr("  last_dns_resolved_at \"timestamp when DNS was last resolved in usec\"");
+    log_stderr("");
+    log_stderr("cloud multi-zone optimizations:");
+    log_stderr("  zones_detected       \"number of latency-based zones detected\"");
+    log_stderr("  same_zone_selections \"# times same-zone server was selected\"");
+    log_stderr("  cross_zone_selections \"# times cross-zone server was selected\"");
+    log_stderr("  connection_pool_hits \"# connection pool cache hits\"");
+    log_stderr("  connection_pool_miss \"# connection pool cache misses\"");
+    log_stderr("  health_score_avg     \"average health score across all servers\"");
 }
 
 static void
@@ -167,9 +197,49 @@ stats_metric_deinit(struct array *metric)
     array_deinit(metric);
 }
 
-static rstatus_t
-stats_server_init(struct stats_server *sts, struct server *s)
+static void
+stats_latency_reset(struct array *latency)
 {
+    uint32_t i;
+    uint64_t *bucket;
+
+    for (i = 0; i < NBUCKET; i++) {
+        bucket = array_get(latency, i);
+        *bucket = 0;
+    }
+}
+
+static rstatus_t
+stats_latency_init(struct array *latency)
+{
+    rstatus_t status;
+    uint32_t i;
+
+    status = array_init(latency, NBUCKET, sizeof(uint64_t));
+    for (i = 0; i < NBUCKET; i++) {
+        uint64_t *bucket = array_push(latency);
+        *bucket = 0;
+    }
+    return status;
+}
+
+static void
+stats_latency_deinit(struct array *latency)
+{
+    uint32_t i, buckets;
+
+    buckets = array_n(latency);
+    for (i = 0; i < buckets; i++) {
+        array_pop(latency);
+    }
+    array_deinit(latency);
+}
+
+static rstatus_t
+server_each_map_to_stats_server(void *elem, void *data)
+{
+    struct server *s = elem;
+    struct stats_server *sts = array_push((struct array*)data);
     rstatus_t status;
 
     sts->name = s->name;
@@ -177,6 +247,11 @@ stats_server_init(struct stats_server *sts, struct server *s)
 
     status = stats_server_metric_init(sts);
     if (status != NC_OK) {
+        return status;
+    }
+    status = stats_latency_init(&sts->latency);
+    if (status != NC_OK) {
+        stats_metric_deinit(&sts->metric);
         return status;
     }
 
@@ -188,30 +263,34 @@ stats_server_init(struct stats_server *sts, struct server *s)
 }
 
 static rstatus_t
-stats_server_map(struct array *stats_server, struct array *server)
+stats_server_map(struct array *stats_server, struct array *server, struct array *master)
 {
     rstatus_t status;
-    uint32_t i, nserver;
+    uint32_t nserver, nmaster;
 
     nserver = array_n(server);
     ASSERT(nserver != 0);
+    nmaster = array_n(master);
+    /* nmaster can be 0 */
 
-    status = array_init(stats_server, nserver, sizeof(struct stats_server));
+    status = array_init(stats_server, nserver + nmaster, sizeof(struct stats_server));
     if (status != NC_OK) {
         return status;
     }
 
-    for (i = 0; i < nserver; i++) {
-        struct server *s = array_get(server, i);
-        struct stats_server *sts = array_push(stats_server);
+    status = array_each(server, server_each_map_to_stats_server, stats_server);
+    if (status != NC_OK) {
+        return status;
+    }
 
-        status = stats_server_init(sts, s);
+    if (nmaster != 0) {
+        status = array_each(master, server_each_map_to_stats_server, stats_server);
         if (status != NC_OK) {
             return status;
         }
     }
 
-    log_debug(LOG_VVVERB, "map %"PRIu32" stats servers", nserver);
+    log_debug(LOG_VVVERB, "map %"PRIu32" stats servers", nserver + master);
 
     return NC_OK;
 }
@@ -226,6 +305,7 @@ stats_server_unmap(struct array *stats_server)
     for (i = 0; i < nserver; i++) {
         struct stats_server *sts = array_pop(stats_server);
         stats_metric_deinit(&sts->metric);
+        stats_latency_deinit(&sts->latency);
     }
     array_deinit(stats_server);
 
@@ -240,15 +320,22 @@ stats_pool_init(struct stats_pool *stp, struct server_pool *sp)
     stp->name = sp->name;
     array_null(&stp->metric);
     array_null(&stp->server);
+    array_null(&stp->latency);
 
     status = stats_pool_metric_init(&stp->metric);
     if (status != NC_OK) {
         return status;
     }
-
-    status = stats_server_map(&stp->server, &sp->server);
+    status = stats_latency_init(&stp->latency);
     if (status != NC_OK) {
         stats_metric_deinit(&stp->metric);
+        return status;
+    }
+
+    status = stats_server_map(&stp->server, &sp->server, &sp->redis_master);
+    if (status != NC_OK) {
+        stats_metric_deinit(&stp->metric);
+        stats_latency_deinit(&stp->latency);
         return status;
     }
 
@@ -271,11 +358,13 @@ stats_pool_reset(struct array *stats_pool)
         uint32_t j, nserver;
 
         stats_metric_reset(&stp->metric);
+        stats_latency_reset(&stp->latency);
 
         nserver = array_n(&stp->server);
         for (j = 0; j < nserver; j++) {
             struct stats_server *sts = array_get(&stp->server, j);
             stats_metric_reset(&sts->metric);
+            stats_latency_reset(&sts->latency);
         }
     }
 }
@@ -319,6 +408,7 @@ stats_pool_unmap(struct array *stats_pool)
     for (i = 0; i < npool; i++) {
         struct stats_pool *stp = array_pop(stats_pool);
         stats_metric_deinit(&stp->metric);
+        stats_latency_deinit(&stp->latency);
         stats_server_unmap(&stp->server);
     }
     array_deinit(stats_pool);
@@ -329,10 +419,13 @@ stats_pool_unmap(struct array *stats_pool)
 static rstatus_t
 stats_create_buf(struct stats *st)
 {
-    uint32_t int64_max_digits = 20; /* INT64_MAX = 9223372036854775807 */
-    uint32_t key_value_extra = 8;   /* "key": "value", */
-    uint32_t pool_extra = 8;        /* '"pool_name": { ' + ' }' */
-    uint32_t server_extra = 8;      /* '"server_name": { ' + ' }' */
+    uint32_t int64_max_digits = 20;  /* INT64_MAX = 9223372036854775807 */
+    uint32_t key_value_extra = 8;    /* "key": "value", */
+    uint32_t pool_extra = 8;         /* '"pool_name": { ' + ' }' */
+    uint32_t server_extra = 8;       /* '"server_name": { ' + ' }' */
+    uint32_t pools_tag_extra = 14;   /* '"pools": { ' + ' }' */
+    uint32_t servers_tag_extra = 16; /* '"servers": { ' + ' }' */
+    uint32_t latency_extra = 8;      /* '"latency": [' + '], ' */
     size_t size = 0;
     uint32_t i;
 
@@ -370,6 +463,7 @@ stats_create_buf(struct stats *st)
     size += key_value_extra;
 
     /* server pools */
+    size += pools_tag_extra;
     for (i = 0; i < array_n(&st->sum); i++) {
         struct stats_pool *stp = array_get(&st->sum, i);
         uint32_t j;
@@ -385,7 +479,12 @@ stats_create_buf(struct stats *st)
             size += key_value_extra;
         }
 
+        // server request latency
+        // +1 for comma in array
+        size += NBUCKET*(int64_max_digits+1)+latency_extra;
+
         /* servers per pool */
+        size += servers_tag_extra;
         for (j = 0; j < array_n(&stp->server); j++) {
             struct stats_server *sts = array_get(&stp->server, j);
             uint32_t k;
@@ -400,8 +499,14 @@ stats_create_buf(struct stats *st)
                 size += int64_max_digits;
                 size += key_value_extra;
             }
+            // server request latency
+            // +1 for comma in array
+            size += NBUCKET*(int64_max_digits+1)+latency_extra;
         }
     }
+
+    /* Add extra buffer space for DNS host information - allow for up to 10 servers with 16 addresses each */
+    size += 25600; /* 25KB extra buffer: 10 servers * 16 addresses * 160 bytes per address */
 
     /* footer */
     size += 2;
@@ -429,6 +534,34 @@ stats_destroy_buf(struct stats *st)
         nc_free(st->buf.data);
         st->buf.size = 0;
     }
+}
+
+static rstatus_t
+stats_add_latency(struct stats *st, struct string *key, struct array *latency)
+{
+    struct stats_buffer *buf;
+    uint8_t *pos;
+    int n, room;
+    uint32_t i;
+    uint64_t *bucket;
+
+    buf = &st->buf;
+    pos = buf->data + buf->len;
+    room = (int)(buf->size - buf->len - 1);
+    n = nc_snprintf(pos, room, "\"%.*s\": [", key->len, key->data);
+    for (i = 0; i < NBUCKET; i++) {
+        bucket = array_get(latency, i);
+        if (n >= room) {
+            return NC_ERROR;
+        }
+        if (i == NBUCKET -1) {
+            n += nc_snprintf(pos+n, room - n, "%"PRId64"], ", *bucket);
+        } else {
+            n += nc_snprintf(pos+n, room - n, "%"PRId64",", *bucket);
+        }
+    }
+    buf->len += (size_t)n;
+    return NC_OK;
 }
 
 static rstatus_t
@@ -516,7 +649,12 @@ stats_add_header(struct stats *st)
         return status;
     }
 
-    status = stats_add_num(st, &st->ntotal_conn_str, conn_ntotal_conn());
+    status = stats_add_num(st, &st->pid_str, (int64_t)getpid());
+    if (status != NC_OK) {
+        return status;
+    }
+
+    status = stats_add_num(st, &st->ntotal_conn_str, (int64_t)conn_ntotal_conn());
     if (status != NC_OK) {
         return status;
     }
@@ -628,6 +766,20 @@ stats_copy_metric(struct stats *st, struct array *metric)
 }
 
 static void
+stats_aggregate_latency(struct array *dst, struct array *src)
+{
+    uint32_t i;
+    uint64_t *bucket1;
+    uint64_t *bucket2;
+
+    for (i = 0; i < NBUCKET; i++) {
+        bucket1 = array_get(src, i);
+        bucket2 = array_get(dst, i);
+        *bucket2 += *bucket1;
+    }
+}
+
+static void
 stats_aggregate_metric(struct array *dst, struct array *src)
 {
     uint32_t i;
@@ -682,6 +834,7 @@ stats_aggregate(struct stats *st)
         stp1 = array_get(&st->shadow, i);
         stp2 = array_get(&st->sum, i);
         stats_aggregate_metric(&stp2->metric, &stp1->metric);
+        stats_aggregate_latency(&stp2->latency, &stp1->latency);
 
         for (j = 0; j < array_n(&stp1->server); j++) {
             struct stats_server *sts1, *sts2;
@@ -689,6 +842,7 @@ stats_aggregate(struct stats *st)
             sts1 = array_get(&stp1->server, j);
             sts2 = array_get(&stp2->server, j);
             stats_aggregate_metric(&sts2->metric, &sts1->metric);
+            stats_aggregate_latency(&sts2->latency, &sts1->latency);
         }
     }
 
@@ -706,6 +860,10 @@ stats_make_rsp(struct stats *st)
         return status;
     }
 
+    status = stats_begin_nesting(st, &pools_tag_key);
+    if (status != NC_OK) {
+        return status;
+    }
     for (i = 0; i < array_n(&st->sum); i++) {
         struct stats_pool *stp = array_get(&st->sum, i);
         uint32_t j;
@@ -721,6 +879,16 @@ stats_make_rsp(struct stats *st)
             return status;
         }
 
+        /* copy pool latency from sum(c) to buffer */
+        status = stats_add_latency(st, &req_latency_key, &stp->latency);
+        if (status != NC_OK) {
+            return status;
+        }
+
+        status = stats_begin_nesting(st, &servers_tag_key);
+        if (status != NC_OK) {
+            return status;
+        }
         for (j = 0; j < array_n(&stp->server); j++) {
             struct stats_server *sts = array_get(&stp->server, j);
 
@@ -735,16 +903,39 @@ stats_make_rsp(struct stats *st)
                 return status;
             }
 
+            status = stats_add_latency(st, &server_latency_key, &sts->latency);
+            if (status != NC_OK) {
+                return status;
+            }
+
+            /* Add DNS host information for dynamic servers */
+            status = stats_add_dns_hosts(st, &sts->name);
+            if (status != NC_OK) {
+                return status;
+            }
+
             status = stats_end_nesting(st);
             if (status != NC_OK) {
                 return status;
             }
         }
 
+        /* end nesting for server name*/
         status = stats_end_nesting(st);
         if (status != NC_OK) {
             return status;
         }
+
+        /* end nesting for servers tag */
+        status = stats_end_nesting(st);
+        if (status != NC_OK) {
+            return status;
+        }
+    }
+    /* end nesting for pools tag */
+    status = stats_end_nesting(st);
+    if (status != NC_OK) {
+        return status;
     }
 
     status = stats_add_footer(st);
@@ -787,7 +978,7 @@ stats_send_rsp(struct stats *st)
     return NC_OK;
 }
 
-static void
+void
 stats_loop_callback(void *arg1, void *arg2)
 {
     struct stats *st = arg1;
@@ -804,11 +995,119 @@ stats_loop_callback(void *arg1, void *arg2)
     stats_send_rsp(st);
 }
 
-static void *
-stats_loop(void *arg)
+static rstatus_t
+stats_each_calc_shared_mem_size(void *elem, void *data)
 {
-    event_loop_stats(stats_loop_callback, arg);
+    char *shared_mem = ((struct instance *)elem)->ctx->shared_mem;
+    size_t *size = data;
+    *size += strlen(shared_mem);
+    /* use "," instead of "\0" */
+    return NC_OK;
+}
+
+static rstatus_t
+stats_each_shared_mem_aggregate(void *elem, void *data)
+{
+    char *shared_mem = ((struct instance *)elem)->ctx->shared_mem;
+    struct stats_buffer *buf = data;
+    size_t len = strlen(shared_mem);
+    uint8_t  *pos = buf->data + buf->len;
+    memcpy(pos, shared_mem, len);
+    buf->len += len;
+    pos[len-1] = ',';
+    return NC_OK;
+}
+
+static rstatus_t
+stats_master_send_resp(struct stats *st)
+{
+    rstatus_t status;
+    ssize_t n;
+    int sd;
+    struct stats_buffer buf;
+    buf.len=0;
+    buf.size=0;
+
+    status = array_each(&master_nci->workers, stats_each_calc_shared_mem_size, &buf.size);
+    if (status) {
+        return NC_ERROR;
+    }
+    /* delete a "," and add "[","]","\0" */
+    buf.size+=2;
+    buf.data = nc_alloc(buf.size);
+    if (buf.data == NULL) {
+       log_error("new out buf for master to aggregate failed");
+        return NC_ERROR;
+    }
+
+    buf.data[0] = '[';
+    buf.len = 1;
+    status = array_each(&master_nci->workers, stats_each_shared_mem_aggregate, &buf);
+    if (status) {
+        return NC_ERROR;
+    }
+    buf.data[buf.len-1] = ']';
+    buf.data[buf.len] = 0;
+
+    sd = accept(st->sd, NULL, NULL);
+        if (sd < 0) {
+            log_error("accept on m %d failed: %s", st->sd, strerror(errno));
+            free(buf.data);
+            return NC_ERROR;
+        }
+
+    log_debug(LOG_VERB, "send stats on sd %d %d bytes", sd, buf.len);
+
+    n = nc_sendn(sd, buf.data, buf.len);
+    if (n < 0) {
+        log_error("send stats on sd %d failed: %s", sd, strerror(errno));
+        close(sd);
+        free(buf.data);
+        return NC_ERROR;
+    }
+
+    close(sd);
+    free(buf.data);
+    return NC_OK;
+};
+
+void
+stats_master_loop_callback(void *arg1, void* arg2)
+{
+    struct stats *st = arg1;
+    int n = *((int *)arg2);
+
+    if (n == 0) {
+        return;
+    }
+
+    /* master aggregate worker buf to collector */
+    stats_master_send_resp(st);
+}
+
+static void *
+stats_master_loop(void *arg)
+{
+    struct stats *st = arg;
+    event_loop_stats(st->loop, arg);
     return NULL;
+}
+
+static void *
+stats_worker_loop(void *arg)
+{
+    rstatus_t status;
+    struct stats *st = arg;
+    for (;;) {
+        stats_aggregate(st);
+        status = stats_make_rsp(st);
+        if (status != NC_OK) {
+            return NULL;
+        }
+        memcpy(st->owner->shared_mem, st->buf.data, st->buf.len);
+        st->owner->shared_mem[st->buf.len] = 0;
+        sleep((unsigned int)(st->interval/1000));
+    }
 }
 
 static rstatus_t
@@ -862,12 +1161,20 @@ stats_start_aggregator(struct stats *st)
         return NC_OK;
     }
 
-    status = stats_listen(st);
-    if (status != NC_OK) {
-        return status;
+    /* stats is worker when loop is null */
+    if (st->loop != NULL) {
+        status = stats_listen(st);
+        if (status != NC_OK) {
+            return status;
+        }
     }
 
-    status = pthread_create(&st->tid, NULL, stats_loop, st);
+    if (st->loop != NULL) {
+        status = pthread_create(&st->tid, NULL, stats_master_loop, st);
+    } else {
+        status = pthread_create(&st->tid, NULL, stats_worker_loop, st);
+    }
+
     if (status < 0) {
         log_error("stats aggregator create failed: %s", strerror(status));
         return NC_ERROR;
@@ -883,12 +1190,14 @@ stats_stop_aggregator(struct stats *st)
         return;
     }
 
-    close(st->sd);
+    if (st->sd > 0) {
+        close(st->sd);
+    }
 }
 
 struct stats *
 stats_create(uint16_t stats_port, char *stats_ip, int stats_interval,
-             char *source, struct array *server_pool)
+             char *source, struct array *server_pool, stats_loop_t loop)
 {
     rstatus_t status;
     struct stats *st;
@@ -915,6 +1224,8 @@ stats_create(uint16_t stats_port, char *stats_ip, int stats_interval,
     st->tid = (pthread_t) -1;
     st->sd = -1;
 
+    st->loop = loop;
+
     string_set_text(&st->service_str, "service");
     string_set_text(&st->service, "nutcracker");
 
@@ -926,6 +1237,8 @@ stats_create(uint16_t stats_port, char *stats_ip, int stats_interval,
 
     string_set_text(&st->uptime_str, "uptime");
     string_set_text(&st->timestamp_str, "timestamp");
+
+    string_set_text(&st->pid_str, "pid");
 
     string_set_text(&st->ntotal_conn_str, "total_connections");
     string_set_text(&st->ncurr_conn_str, "curr_connections");
@@ -970,6 +1283,10 @@ error:
 void
 stats_destroy(struct stats *st)
 {
+    //worker's stats will destroy in worker processes;
+    if (st == NULL) {
+        return;
+    }
     stats_stop_aggregator(st);
     stats_pool_unmap(&st->sum);
     stats_pool_unmap(&st->shadow);
@@ -1209,4 +1526,215 @@ _stats_server_set_ts(struct context *ctx, struct server *server,
 
     log_debug(LOG_VVVERB, "set ts field '%.*s' to %"PRId64"", stm->name.len,
               stm->name.data, stm->value.timestamp);
+}
+
+void
+_stats_server_set(struct context *ctx, struct server *server,
+                  stats_server_field_t fidx, int64_t val)
+{
+    struct stats_metric *stm;
+
+    stm = stats_server_to_metric(ctx, server, fidx);
+
+    ASSERT(stm->type == STATS_GAUGE);
+    stm->value.counter = val;
+
+    log_debug(LOG_VVVERB, "set gauge field '%.*s' to %"PRId64"", stm->name.len,
+              stm->name.data, stm->value.counter);
+}
+
+void
+_stats_pool_record_latency(struct context *ctx, struct server_pool *pool, int64_t latency)
+{
+    struct stats *st;
+    struct stats_pool *stp;
+    uint32_t ind;
+    uint64_t *counter;
+
+    st = ctx->stats;
+    stp = array_get(&st->current, pool->idx);
+    for (ind = 0; latency > latency_buckets[ind]; ind++);
+    counter = array_get(&stp->latency, ind);
+    *counter += 1;
+}
+
+void
+_stats_server_record_latency(struct context *ctx, struct server *server, int64_t latency)
+{
+    struct stats *st;
+    struct stats_pool *stp;
+    struct stats_server *sts;
+    uint32_t ind, pidx, sidx;
+    uint64_t *counter;
+
+    sidx = server->idx;
+    pidx = server->owner->idx;
+    st = ctx->stats;
+    stp = array_get(&st->current, pidx);
+    sts = array_get(&stp->server, sidx);
+    for (ind = 0; latency > latency_buckets[ind]; ind++);
+    counter = array_get(&sts->latency, ind);
+    *counter += 1;
+}
+
+void
+stats_show_read_hosts(struct array *server_pool)
+{
+    uint32_t i, j, npool, nserver;
+    struct server_pool *sp;
+    struct server *server;
+    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
+    rstatus_t status;
+
+    if (server_pool == NULL) {
+        log_stderr("read hosts: server_pool is NULL");
+        return;
+    }
+
+    npool = array_n(server_pool);
+    log_stderr("");
+    log_stderr("read hosts configuration:");
+
+    for (i = 0; i < npool; i++) {
+        sp = array_get(server_pool, i);
+        nserver = array_n(&sp->server);
+        
+        log_stderr("  pool '%.*s':", sp->name.len, sp->name.data);
+        log_stderr("    zone_aware: %s", sp->zone_aware ? "enabled" : "disabled");
+        if (sp->zone_aware) {
+            log_stderr("    zone_weight: %"PRIu32"%%", sp->zone_weight);
+        }
+        log_stderr("    dns_resolve_interval: %"PRId64" seconds", sp->dns_resolve_interval / 1000000);
+
+        for (j = 0; j < nserver; j++) {
+            server = array_get(&sp->server, j);
+            
+            if (server->is_dynamic && server->dns != NULL) {
+                status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+                if (status == NC_OK) {
+                    log_stderr("    server '%.*s':", server->pname.len, server->pname.data);
+                    log_stderr("      type: dynamic DNS");
+                    log_stderr("      hostname: %.*s", server->dns->hostname.len, server->dns->hostname.data);
+                    log_stderr("      resolved_addresses: %"PRIu32, server->dns->naddresses);
+                    log_stderr("      current_address_index: %"PRIu32, server->current_addr_idx);
+                    if (server->dns->naddresses > 0 && server->current_addr_idx < server->dns->naddresses) {
+                        log_stderr("      current_latency: %"PRIu32" microseconds", 
+                                   server->dns->latencies[server->current_addr_idx]);
+                        log_stderr("      current_failures: %"PRIu32, 
+                                   server->dns->failure_counts[server->current_addr_idx]);
+                    }
+                } else {
+                    log_stderr("    server '%.*s': failed to get read host info", 
+                               server->pname.len, server->pname.data);
+                }
+            } else {
+                log_stderr("    server '%.*s': static configuration", 
+                           server->pname.len, server->pname.data);
+            }
+        }
+        log_stderr("");
+    }
+}
+
+static rstatus_t
+stats_add_dns_hosts(struct stats *st, struct string *server_name)
+{
+    rstatus_t status;
+    struct server *server;
+    uint32_t i, j, npool, nserver;
+    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
+    
+    /* Find the server object by name */
+    server = NULL;
+    npool = array_n(&st->owner->pool);
+    
+    for (i = 0; i < npool && server == NULL; i++) {
+        struct server_pool *pool = array_get(&st->owner->pool, i);
+        nserver = array_n(&pool->server);
+        
+        for (j = 0; j < nserver; j++) {
+            struct server *s = array_get(&pool->server, j);
+            
+            /* Check if server_name matches the beginning of s->pname (ignoring weight suffix) */
+            if (server_name->len <= s->pname.len && 
+                memcmp(server_name->data, s->pname.data, server_name->len) == 0 &&
+                (server_name->len == s->pname.len || s->pname.data[server_name->len] == ':')) {
+                server = s;
+                break;
+            }
+        }
+    }
+    
+    /* If server not found or not dynamic, add empty object */
+    if (server == NULL) {
+    } else if (!server->is_dynamic) {
+    } else if (server->dns == NULL) {
+    } else {
+    }
+    
+    if (server == NULL || !server->is_dynamic || server->dns == NULL) {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+        return NC_OK;
+    }
+    
+    /* Get DNS host information */
+    status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+    if (status != NC_OK) {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+        if (n < 0 || n >= (int)room) {
+            return NC_ERROR;
+        }
+        buf->len += (size_t)n;
+        return NC_OK;
+    }
+    
+    
+    /* Add the DNS hosts information to stats */
+    {
+        struct stats_buffer *buf = &st->buf;
+        uint8_t *pos = buf->data + buf->len;
+        size_t room = buf->size - buf->len - 1;
+        /* Replace "read_hosts" with "dns_hosts" in the buffer */
+        
+        char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
+        if (read_hosts_pos != NULL) {
+            /* Copy everything after "read_hosts": */
+            char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
+            
+            /* Safely measure content length with bounds checking */
+            size_t max_content_len = room > 20 ? room - 20 : 0; /* Leave 20 bytes for format overhead */
+            size_t content_len = strnlen(content_start, max_content_len);
+            
+            /* Validate content fits in buffer */
+            if (content_len >= max_content_len) {
+                log_warn("🚨 DNS content too large for stats buffer: %zu bytes", content_len);
+                return NC_ERROR;
+            }
+            
+            int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
+            if (n < 0 || n >= (int)room) {
+                log_warn("🚨 MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
+                return NC_ERROR;
+            }
+            buf->len += (size_t)n;
+        } else {
+            int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
+            if (n < 0 || n >= (int)room) {
+                return NC_ERROR;
+            }
+            buf->len += (size_t)n;
+        }
+    }
+    
+    return NC_OK;
 }
