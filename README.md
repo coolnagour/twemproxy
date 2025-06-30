@@ -20,7 +20,7 @@ version: '3.3'
 services:
   # Twemproxy with zone-aware routing
   twemproxy:
-    image: bobbymaher/twemproxy:2.1.0
+    image: bobbymaher/twemproxy:2.1.1
     ports:
       - "6378:6378"  # Redis read port
       - "6379:6379"  # Redis write port
