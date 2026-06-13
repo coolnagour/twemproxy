@@ -68,50 +68,52 @@ struct continuum {
 };
 
 /*
- * EAGER PER-ADDRESS ARRAY INVARIANT (read before adding a new array below).
+ * One resolved address and everything we track about it.
  *
- * The arrays marked "eager" are parallel: each is allocated and kept at exactly
- * naddresses entries, and index i in every one describes the SAME address as
- * dns->addresses[i]. (latencies, last_latency_check, failure_counts, last_seen,
- * last_connected, request_counts, hostnames are eager. The health_* and zone_*
- * arrays are allocated lazily on first use -- they are NOT eager, so they are
- * always NULL-guarded individually.)
+ * This used to be ~11 PARALLEL arrays inside struct server_dns, all indexed by
+ * the same address index. That layout had a whole bug class: any code that
+ * shifted or grew the addresses had to touch every array in lock-step, and a
+ * missed array silently desynced (index i pointed at a different address in
+ * different arrays) or leaked / double-freed. Folding the per-address state into
+ * one struct deletes that class: there is a single array, so a shift is one
+ * memmove and a grow is one realloc -- nothing can fall out of step.
  *
- * If you add a NEW eager per-address array, you MUST edit ALL FOUR sites or the
- * arrays silently desync (wrong index -> wrong address) or leak/double-free
- * (all in src/nc_server.c):
- *   1. server_dns_resolve() first-resolution path  -- initial nc_alloc + the
- *      per-element init loop (and free it on the alloc-failure cleanup there).
- *   2. server_dns_resolve() accumulate-grow path    -- the nc_realloc step that
- *      grows every array by one before appending, plus the new element's init.
- *   3. server_dns_remove_address_at()               -- shift entries [i+1..]
- *      down by one and clear/deinit the freed tail slot.
- *   4. server_dns_deinit()                           -- free it (NULL-guarded;
- *      string arrays also string_deinit each element).
+ * `addrs` is allocated once to cover up to max_addresses entries; naddresses is
+ * how many are live. Every field below lives in this struct (the old lazy-vs-
+ * eager split is gone -- zone_id / health_score / last_health_check are no
+ * longer allocated separately).
  */
+struct dns_addr {
+    struct sockinfo addr;               /* resolved IP + port */
+    struct string   hostname;           /* canonical hostname for this addr (reverse DNS) */
+    uint32_t        latency;            /* EWMA connect latency (usec) */
+    bool            latency_measured;   /* false until the first real measurement
+                                         * (replaces DEFAULT_LATENCY_USEC-as-sentinel) */
+    int64_t         last_latency_check;  /* last latency measurement timestamp */
+    uint32_t        failure_count;       /* consecutive failures for this addr */
+    int64_t         last_seen;           /* last time this addr was returned by DNS */
+    int64_t         last_connected;      /* last time this addr was used to connect */
+    uint64_t        request_count;       /* requests sent to this addr */
+    uint32_t        zone_id;             /* zone ID (latency clustering); 0 = unassigned */
+    uint32_t        health_score;        /* rolling health score (0-100) */
+    int64_t         last_health_check;   /* last health check timestamp */
+};
+
 struct server_dns {
     struct string      hostname;          /* Original hostname */
-    struct sockinfo    *addresses;       /* Array of resolved IPs */
-    uint32_t           naddresses;        /* Number of resolved IPs */
-    uint32_t           max_addresses;     /* Maximum addresses allocated */
+    struct dns_addr    *addrs;            /* Array of resolved addresses (AoS) */
+    uint32_t           naddresses;        /* Number of resolved IPs (live entries in addrs) */
+    uint32_t           max_addresses;     /* Maximum addresses (cap; addrs is sized to this) */
     int64_t            last_resolved;     /* Last DNS resolution time */
     int64_t            resolve_interval;  /* DNS re-resolution interval (usec) */
-    uint32_t           *latencies;        /* Latency for each address (usec) */
-    int64_t            *last_latency_check; /* Last latency measurement */
-    uint32_t           *failure_counts;   /* Failure count per address */
-    int64_t            *last_seen;         /* Last time each address was returned by DNS */
-    int64_t            *last_connected;    /* Last time each address was used for connection establishment */
-    uint64_t           *request_counts;   /* Number of requests sent to each address */
-    struct string      *hostnames;        /* Canonical hostname for each address (reverse DNS) */
-    
+
     /* Enhanced health monitoring */
-    uint32_t           *health_scores;    /* Rolling health score per address (0-100) */
-    int64_t            *last_health_check; /* Last health check timestamp */
+    bool               health_initialized; /* has the first health check run? (was: health_scores != NULL) */
     uint32_t           health_check_interval; /* Health check frequency (usec) */
     uint32_t           consecutive_failures_limit; /* Max failures before marking unhealthy */
-    
+
     /* Zone detection fields (latency-based) */
-    uint32_t           *zone_ids;         /* Zone ID for each address (based on latency clustering) */
+    bool               zones_assigned;    /* have we run zone analysis at least once? (was: zone_ids != NULL) */
     uint32_t           local_zone_id;     /* Current instance zone ID */
     uint32_t           next_zone_id;      /* Next zone ID to assign */
     int64_t            last_zone_analysis; /* Last zone analysis timestamp */

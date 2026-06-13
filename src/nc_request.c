@@ -563,7 +563,7 @@ req_forward_stats(struct context *ctx, struct server *server, struct msg *msg)
     if (server->is_dynamic && server->dns != NULL) {
         uint32_t addr_idx = server->current_addr_idx;
         if (addr_idx < server->dns->naddresses) {
-            server->dns->request_counts[addr_idx]++;
+            server->dns->addrs[addr_idx].request_count++;
         }
     }
 }

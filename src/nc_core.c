@@ -429,11 +429,11 @@ core_dns_maintenance(struct context *ctx)
 
                         /* Get the CNAME for the specific address this connection is using */
                         const char *cname_str = "unknown";
-                        if (server->is_dynamic && server->dns != NULL && 
-                            server->dns->hostnames != NULL && 
-                            conn->addr_idx < server->dns->naddresses && 
-                            server->dns->hostnames[conn->addr_idx].data != NULL) {
-                            cname_str = (const char *)server->dns->hostnames[conn->addr_idx].data;
+                        if (server->is_dynamic && server->dns != NULL &&
+                            server->dns->addrs != NULL &&
+                            conn->addr_idx < server->dns->naddresses &&
+                            server->dns->addrs[conn->addr_idx].hostname.data != NULL) {
+                            cname_str = (const char *)server->dns->addrs[conn->addr_idx].hostname.data;
                         }
                         
                         log_debug(LOG_INFO, "connection lifetime expired: closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
@@ -477,19 +477,19 @@ core_dns_maintenance(struct context *ctx)
                                 const char *cname_str = "unknown";
                                 
                                 /* Convert IP to string */
-                                if (dns->addresses[k].family == AF_INET) {
-                                    struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addresses[k].addr;
+                                if (dns->addrs[k].addr.family == AF_INET) {
+                                    struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addrs[k].addr.addr;
                                     inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
-                                } else if (dns->addresses[k].family == AF_INET6) {
-                                    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&dns->addresses[k].addr;
+                                } else if (dns->addrs[k].addr.family == AF_INET6) {
+                                    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&dns->addrs[k].addr.addr;
                                     inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
                                 } else {
                                     snprintf(addr_str, sizeof(addr_str), "unknown");
                                 }
-                                
+
                                 /* Get CNAME if available */
-                                if (dns->hostnames != NULL && k < dns->naddresses && dns->hostnames[k].data != NULL) {
-                                    cname_str = (const char *)dns->hostnames[k].data;
+                                if (k < dns->naddresses && dns->addrs[k].hostname.data != NULL) {
+                                    cname_str = (const char *)dns->addrs[k].hostname.data;
                                 }
                                 
                                 log_debug(LOG_VERB, "   -> addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);

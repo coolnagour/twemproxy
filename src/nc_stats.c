@@ -1612,10 +1612,10 @@ stats_show_read_hosts(struct array *server_pool)
                     log_stderr("      resolved_addresses: %"PRIu32, server->dns->naddresses);
                     log_stderr("      current_address_index: %"PRIu32, server->current_addr_idx);
                     if (server->dns->naddresses > 0 && server->current_addr_idx < server->dns->naddresses) {
-                        log_stderr("      current_latency: %"PRIu32" microseconds", 
-                                   server->dns->latencies[server->current_addr_idx]);
-                        log_stderr("      current_failures: %"PRIu32, 
-                                   server->dns->failure_counts[server->current_addr_idx]);
+                        log_stderr("      current_latency: %"PRIu32" microseconds",
+                                   server->dns->addrs[server->current_addr_idx].latency);
+                        log_stderr("      current_failures: %"PRIu32,
+                                   server->dns->addrs[server->current_addr_idx].failure_count);
                     }
                 } else {
                     log_stderr("    server '%.*s': failed to get read host info", 
