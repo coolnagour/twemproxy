@@ -227,7 +227,6 @@ uint32_t server_assign_zone_id(struct server *server, uint32_t addr_idx);
 uint32_t server_calculate_zone_weight(struct server *server, uint32_t addr_idx);
 rstatus_t server_health_check(struct server *server, uint32_t addr_idx);
 bool server_is_healthy(struct server *server, uint32_t addr_idx);
-rstatus_t server_discover_cache_endpoints(struct server *server);
 
 uint32_t server_pool_idx(struct server_pool *pool, uint8_t *key, uint32_t keylen);
 struct conn *server_pool_conn(struct context *ctx, struct server_pool *pool, uint8_t *key, uint32_t keylen);

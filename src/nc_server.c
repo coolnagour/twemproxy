@@ -1851,10 +1851,7 @@ server_select_best_address(struct server *server)
     if (pool->zone_aware) {
         server_detect_zones_by_latency(server);
     }
-    
-    /* Cache endpoint discovery (always enabled for cache services) */
-    server_discover_cache_endpoints(server);
-    
+
     /* Check if current server is still healthy - if not, force immediate re-selection */
     if (server->current_addr_idx < dns->naddresses && 
         !server_is_healthy(server, server->current_addr_idx)) {
@@ -2710,49 +2707,4 @@ server_is_healthy(struct server *server, uint32_t addr_idx)
               time_since_seen / 1000000);
     
     return is_healthy;
-}
-
-/*
- * Discover managed cache service endpoints (cloud-agnostic)
- */
-rstatus_t
-server_discover_cache_endpoints(struct server *server)
-{
-    struct server_dns *dns;
-    struct server_pool *pool;
-    
-    if (server == NULL || !server->is_dynamic || server->dns == NULL) {
-        return NC_ERROR;
-    }
-    
-    dns = server->dns;
-    pool = server->owner;
-    
-    /* Cache endpoint discovery (always enabled for cache services) */
-    
-    /* Check if hostname looks like a managed cache service endpoint */
-    if (dns->hostname.len > 20 && 
-        (strstr((char*)dns->hostname.data, ".cache.") != NULL ||
-         strstr((char*)dns->hostname.data, ".redis.") != NULL ||
-         strstr((char*)dns->hostname.data, ".memcache.") != NULL ||
-         strstr((char*)dns->hostname.data, "cluster") != NULL)) {
-        
-        log_debug(LOG_INFO, "🔍 cache mode: enhanced discovery for '%.*s'",
-                  dns->hostname.len, dns->hostname.data);
-        
-        /* Cache-specific DNS resolution with shorter intervals for managed services */
-        if (dns->resolve_interval > 15000000LL) { /* If > 15 seconds */
-            dns->resolve_interval = 15000000LL; /* Set to 15 seconds for managed cache */
-            log_debug(LOG_INFO, "🔍 adjusted DNS interval to 15s for managed cache endpoint");
-        }
-        /*
-         * No "-ro"/"read"/"replica" hostname sniffing here: it only ever logged
-         * a cosmetic line and had zero routing effect. Read-vs-write routing is
-         * now driven solely by the explicit dynamic_endpoint flag (see
-         * conf_server / fix dropping the unsafe -ro auto-detection), so keying
-         * off a substring of the hostname would be misleading.
-         */
-    }
-
-    return NC_OK;
 }

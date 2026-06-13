@@ -87,13 +87,10 @@ stats_describe(void)
     log_stderr("  dns_addresses        \"# DNS resolved addresses for dynamic servers\"");
     log_stderr("  dns_resolves         \"# DNS resolution attempts\"");
     log_stderr("  dns_failures         \"# DNS resolution failures\"");
-    log_stderr("  latency_fastest_sel  \"# times fastest server was selected\"");
-    log_stderr("  latency_distributed_sel \"# times distributed server was selected\"");
     log_stderr("  current_latency_us   \"current connection latency in microseconds\"");
     log_stderr("  last_dns_resolved_at \"timestamp when DNS was last resolved in usec\"");
     log_stderr("");
     log_stderr("cloud multi-zone optimizations:");
-    log_stderr("  zones_detected       \"number of latency-based zones detected\"");
     log_stderr("  same_zone_selections \"# times same-zone server was selected\"");
     log_stderr("  cross_zone_selections \"# times cross-zone server was selected\"");
     log_stderr("  connection_pool_hits \"# connection pool cache hits\"");
@@ -1665,13 +1662,7 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
         }
     }
     
-    /* If server not found or not dynamic, add empty object */
-    if (server == NULL) {
-    } else if (!server->is_dynamic) {
-    } else if (server->dns == NULL) {
-    } else {
-    }
-    
+    /* If server not found, not dynamic, or never resolved, emit a null object */
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
         struct stats_buffer *buf = &st->buf;
         uint8_t *pos = buf->data + buf->len;
