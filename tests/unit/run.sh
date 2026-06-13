@@ -303,6 +303,19 @@ bin_dnsoom="$(build_test test_dns_resolve_oom "$here/test_dns_resolve_oom.c")"
 bin_dnsoom_prefix="$(build_test test_dns_resolve_oom_prefix \
                   "$here/test_dns_resolve_oom.c" -DTEST_PREFIX_NO_REVERT)"
 
+# --- prod-hardening #3: HTTP-aware stats endpoint ---------------------------
+# Drives the REAL stats_request_classify() + stats_http_format_header() from
+# nc_stats.c -- the pure request-classification and response-header helpers the
+# HTTP-aware stats server uses. Proves: a bare connect classifies RAW (the
+# legacy /dev/tcp healthcheck keeps getting raw JSON), GET //GET /stats serve
+# the JSON, GET /health is the health probe, HEAD /stats is headers-only, an
+# unknown path is 404, a known method with a malformed line is 400, and the
+# header formatter emits a well-formed HTTP/1.1 status line + required headers
+# (and reports overflow). The socket round-trip itself is covered by the
+# functional curl test (task verification), not here. Single fixed build only:
+# this is straight-line logic, no pre-fix red variant to stage.
+bin_statshttp="$(build_test test_stats_http "$here/test_stats_http.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -319,6 +332,7 @@ run_test    "$bin_dnsinit" 0 "test_dns_init_deinit (prod-hardening #1 clean-empt
 run_nonzero "$bin_dnsinit_prefix" "test_dns_init_deinit (prod-hardening #1, NO-NULL-INIT wild-free reproduction)" || fail=1
 run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-count, fixed build)" || fail=1
 run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-REVERT inconsistent-dns reproduction)" || fail=1
+run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware stats classify+format)" || fail=1
 
 echo
 if [ "$fail" -ne 0 ]; then
