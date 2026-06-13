@@ -22,6 +22,7 @@
 
 #include <nc_core.h>
 #include <nc.h>
+#include <nc_conf.h>     /* struct conf -- SIGHUP reads global.worker_processes */
 #include <nc_signal.h>
 #include <nc_process.h>
 
@@ -70,6 +71,15 @@ signal_deinit(void)
 {
 }
 
+/*
+ * TODO(async-safety): this handler uses non-async-signal-safe calls (buffered
+ * logging via log_safe, localtime in the log path, exit()) and reads/writes
+ * pm_* flags that are plain (not volatile sig_atomic_t). That only matters with
+ * worker_processes > 0 (real master/worker signalling); this deployment runs
+ * single-process, so the rework (volatile sig_atomic_t flags, drop
+ * localtime/buffered-logging/exit from the handler) is deferred. Do NOT add new
+ * unsafe calls to the multi-process paths here.
+ */
 void
 signal_handler(int signo)
 {
@@ -119,8 +129,21 @@ signal_handler(int signo)
 
     case SIGHUP:
         if (pm_myrole == ROLE_MASTER) {
-            actionstr = ", reload config";
-            action = nc_reload_config;
+            /*
+             * Single-process mode (worker_processes < 1) has no master/worker
+             * split, so pm_myrole is still ROLE_MASTER here -- but the single
+             * process run loop (nc_single_process_cycle) never consumes
+             * pm_reload, so arming nc_reload_config would be a SILENT no-op.
+             * Say so plainly instead of pretending the reload happened.
+             */
+            if (master_nci->ctx->cf->global.worker_processes < 1) {
+                log_safe("SIGHUP: config reload is not supported in "
+                         "single-process mode (worker_processes < 1); "
+                         "restart twemproxy to apply config changes");
+            } else {
+                actionstr = ", reload config";
+                action = nc_reload_config;
+            }
         }
         break;
 
