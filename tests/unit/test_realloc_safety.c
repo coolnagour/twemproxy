@@ -101,6 +101,32 @@
  *     dns->addresses[0] is a genuine UAF that libgmalloc traps, while `leaks`
  *     flags the orphaned blocks. run.sh builds BOTH variants.
  *
+ * ---------------------------------------------------------------------------
+ * ALSO COVERED HERE: the new_hostnames error-path leak fix
+ * ---------------------------------------------------------------------------
+ * server_dns_resolve() carries a SECOND function-local temporary alongside the
+ * resolved-address list: char **new_hostnames (+ new_naddresses), the parallel
+ * array of captured canonical hostname strings. The success tail frees BOTH
+ * temporaries; the pre-fix nomem (OOM) branch freed ONLY the resolved list,
+ * leaking new_hostnames and every non-NULL element string on any realloc OOM
+ * during the append. The fix mirrors the success-tail hostname free into nomem.
+ *
+ * append_addr_grow() below takes a populated new_hostnames temp (a heap char*
+ * array with non-NULL element strings allocated via the same allocator, plus a
+ * NULL hole to exercise the per-element guard) and, in its nomem branch, frees
+ * it the way the fixed production nomem does. Variant flag for THIS fix:
+ *
+ *   default build (hostname-free present): the forced-OOM nomem frees the temp
+ *     array + element strings -> leak-clean under `leaks` (GREEN).
+ *   -DTEST_OMIT_HOSTNAMES_FREE (hostname-free absent): the forced-OOM nomem
+ *     skips that free; the array + its element strings are orphaned with no
+ *     other owner -> `leaks --atExit` reports them (the RED for this fix).
+ *
+ * run.sh builds and runs the default (must be leak-clean) variant; the
+ * TEST_OMIT_HOSTNAMES_FREE red is demonstrable on demand (see the comment by
+ * its build line in run.sh) since `leaks` is what distinguishes the two and the
+ * harness's run_test path runs every binary under it on macOS.
+ *
  * Build/run: see tests/unit/run.sh
  */
 
@@ -330,11 +356,29 @@ free_dns(struct server_dns *dns)
  * are mirrored. `new_addresses_temp` stands in for the function-local resolved
  * list that the production nomem branch frees.
  *
+ * `new_hostnames_temp` / `new_hostnames_temp_n` stand in for the SECOND
+ * function-local temporary the production code carries: the parallel array of
+ * captured canonical hostname strings (char **new_hostnames + new_naddresses).
+ * The success tail of server_dns_resolve() frees BOTH temporaries -- the
+ * resolved list AND new_hostnames (per-element strings + the array). The
+ * pre-fix nomem branch freed ONLY the resolved list, leaking new_hostnames and
+ * every non-NULL element string on any realloc OOM. The fix mirrors the
+ * success tail's hostname free into nomem. This test models that array
+ * (populated with at least one non-NULL element string allocated via the SAME
+ * allocator) and asserts nomem frees it: default build (fix present) leaks
+ * nothing; the -DTEST_OMIT_HOSTNAMES_FREE build (fix absent) leaks the array +
+ * its element strings -> `leaks` reports them (the TDD red for THIS fix).
+ *
+ *     *** KEEP this nomem hostname-free block IN SYNC with both the nomem
+ *         label AND the success tail of server_dns_resolve() in
+ *         src/nc_server.c. ***
+ *
  * Returns NC_OK on success, NC_ENOMEM on a forced realloc failure.
  * ------------------------------------------------------------------------- */
 static int
 append_addr_grow(struct server_dns *dns, struct sockinfo *cand,
-                 void *new_addresses_temp)
+                 void *new_addresses_temp,
+                 char **new_hostnames_temp, uint32_t new_hostnames_temp_n)
 {
     uint32_t new_size = dns->naddresses + 1;
 
@@ -354,11 +398,23 @@ append_addr_grow(struct server_dns *dns, struct sockinfo *cand,
         new_last_seen == NULL || new_last_connected == NULL ||
         new_request_counts == NULL || new_hostnames_array == NULL) {
         /*
-         * Pre-fix nomem branch: free the temp resolved list and return -- the
-         * successful new_* locals are dropped on the floor (LEAK) and dns->*
-         * is left pointing at the blocks realloc already freed (DANGLING).
+         * Pre-fix nomem branch FOR FIX #4 (the realloc write-back bug): free the
+         * temp resolved list and return -- the successful new_* locals are
+         * dropped on the floor (LEAK) and dns->* is left pointing at the blocks
+         * realloc already freed (DANGLING). The new_hostnames temp is freed
+         * unconditionally here so this (fix #4) variant does not also leak it --
+         * the new_hostnames-leak red is isolated to the fixed-writeback build
+         * below, gated by TEST_OMIT_HOSTNAMES_FREE.
          */
         if (new_addresses_temp) nc_free(new_addresses_temp);
+        if (new_hostnames_temp != NULL) {
+            for (uint32_t hi = 0; hi < new_hostnames_temp_n; hi++) {
+                if (new_hostnames_temp[hi] != NULL) {
+                    nc_free(new_hostnames_temp[hi]);
+                }
+            }
+            nc_free(new_hostnames_temp);
+        }
         return NC_ENOMEM;
     }
 
@@ -403,6 +459,22 @@ nomem:
     /* Fixed nomem branch: free the temp resolved list, return WITHOUT bumping
      * naddresses. dns->* arrays are all >= naddresses, none dangling. */
     if (new_addresses_temp) nc_free(new_addresses_temp);
+    /*
+     * Mirror of the production nomem hostname-free (== the success-tail free):
+     * release the parallel new_hostnames temp + every captured element string.
+     * -DTEST_OMIT_HOSTNAMES_FREE omits this, reproducing the pre-fix leak so
+     * `leaks` reports the orphaned array + element strings (the TDD red).
+     */
+#ifndef TEST_OMIT_HOSTNAMES_FREE
+    if (new_hostnames_temp != NULL) {
+        for (uint32_t hi = 0; hi < new_hostnames_temp_n; hi++) {
+            if (new_hostnames_temp[hi] != NULL) {
+                nc_free(new_hostnames_temp[hi]);
+            }
+        }
+        nc_free(new_hostnames_temp);
+    }
+#endif
     return NC_ENOMEM;
 #endif
 }
@@ -434,13 +506,40 @@ test_realloc_failure_at(int fail_after)
      * leak) -- `leaks` will catch it if either variant forgets. */
     void *temp_resolved = nc_alloc(64);
 
+    /*
+     * A stand-in for the SECOND function-local temp: the parallel hostname
+     * array (char **new_hostnames + new_naddresses). Build it exactly like the
+     * production resolver does -- a heap array of char* with each element a
+     * strdup-style heap copy via the SAME allocator the production code frees
+     * with (nc_alloc/nc_free). At least one non-NULL element string MUST be
+     * present so the nomem hostname-free loop has something real to release;
+     * here every element is populated, plus a deliberate NULL hole to exercise
+     * the per-element NULL guard. On a forced OOM the append's nomem branch must
+     * free this whole structure -- `leaks` flags the orphans if the fix's
+     * hostname-free is absent (TEST_OMIT_HOSTNAMES_FREE). */
+    uint32_t hn_n = 3;
+    char **temp_hostnames = nc_alloc(hn_n * sizeof(char *));
+    {
+        uint32_t hi;
+        for (hi = 0; hi < hn_n; hi++) {
+            if (hi == 1) {
+                temp_hostnames[hi] = NULL;          /* NULL hole: guard path */
+                continue;
+            }
+            const char *name = "reader-az1.example.internal";
+            size_t len = strlen(name) + 1;
+            temp_hostnames[hi] = nc_alloc(len);     /* same allocator family */
+            memcpy(temp_hostnames[hi], name, len);
+        }
+    }
+
     make_addr(&cand, 99);
 
     /* Arm: let `fail_after` reallocs succeed, fail the next. With 8 reallocs in
      * the grow, fail_after=5 fails the 6th (last_connected) -- a true mid-
      * sequence partial OOM (5 arrays already grown, 3 not yet). */
     arm_realloc_fail_after(fail_after);
-    rc = append_addr_grow(dns, &cand, temp_resolved);
+    rc = append_addr_grow(dns, &cand, temp_resolved, temp_hostnames, hn_n);
     disarm_realloc();
 
     /* (1) The append must report OOM. */
@@ -508,7 +607,10 @@ test_realloc_failure_at(int fail_after)
         void *temp2 = nc_alloc(64);
         int rc2;
         make_addr(&cand2, 100);
-        rc2 = append_addr_grow(dns, &cand2, temp2);   /* disarmed -> succeeds */
+        /* Success path does not free the temps (production frees once after the
+         * loop), so pass NULL hostnames here -- this call exercises retry
+         * consistency, not the nomem hostname-free. */
+        rc2 = append_addr_grow(dns, &cand2, temp2, NULL, 0);   /* disarmed -> succeeds */
         CHECK(rc2 == NC_OK,
               "retry append after OOM failed (rc=%d) -- struct not consistent",
               rc2);
@@ -532,6 +634,16 @@ test_realloc_failure_at(int fail_after)
      * orphaned grown blocks -> they leak. `leaks --atExit` reports them. On the
      * fixed build dns->* are the live blocks, free_dns frees them all, zero
      * leak.
+     *
+     * NOTE on the new_hostnames leak (THIS fix): temp_hostnames + its element
+     * strings are owned solely by the append on a forced OOM. The fixed nomem
+     * branch frees them (mirroring the success tail), so the default build is
+     * leak-clean. The -DTEST_OMIT_HOSTNAMES_FREE build skips that free; the
+     * array and its two non-NULL element strings are then never freed by anyone
+     * (this function holds no other reference), so `leaks --atExit` reports
+     * them -- the TDD red proving the error-path leak. We do NOT free
+     * temp_hostnames here on purpose: the WHOLE point is that the append owns
+     * that cleanup on the nomem path, exactly as production does.
      */
 }
 

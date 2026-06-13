@@ -1632,11 +1632,23 @@ server_dns_resolve(struct server *server)
              * A grow realloc failed. dns->naddresses was NOT incremented, so
              * every dns-> array is still allocated to >= naddresses (the failed
              * one to its old size, the already-grown ones one larger) -- no
-             * dangling pointer, no leak. Free the temporary resolved list (the
-             * same cleanup the old combined-failure branch did) and bail.
+             * dangling pointer, no leak. Free BOTH temporary lists the success
+             * tail frees: the resolved-address list AND the parallel hostname
+             * array (plus each captured per-element canonical string). This
+             * mirrors the function-tail cleanup exactly (same NULL guard, same
+             * new_naddresses loop bound, same per-element + array free); the
+             * two are mutually-exclusive returns, so no double-free. Bail.
              */
             log_error("failed to allocate memory for new DNS address");
             if (new_addresses) nc_free(new_addresses);
+            if (new_hostnames != NULL) {
+                for (i = 0; i < new_naddresses; i++) {
+                    if (new_hostnames[i] != NULL) {
+                        nc_free(new_hostnames[i]);
+                    }
+                }
+                nc_free(new_hostnames);
+            }
             return NC_ENOMEM;
         }
     }

@@ -171,6 +171,32 @@ run_nonzero() {
     return 0
 }
 
+# run_leaks_must_leak <binary> <label>
+# For a build that should LEAK (the new_hostnames omit-the-free red). A leak is
+# only visible to the macOS `leaks` tool -- libgmalloc/ASan trap OOB & double-
+# free, not plain leaks, and a no-checker run cannot see a leak at all. So this
+# runner ALWAYS runs the binary directly under `leaks --atExit` (independent of
+# the LIBGMALLOC/LDFLAGS mode selected for the other tests) and PASSES only when
+# `leaks` reports a leak (non-zero exit). If `leaks` is unavailable (non-macOS),
+# it SKIPS -- on Linux the same red is shown by ASan's LeakSanitizer instead.
+run_leaks_must_leak() {
+    local bin="$1" label="$2" rc=0
+
+    echo "=== $label ==="
+    if ! command -v leaks >/dev/null 2>&1; then
+        echo "RESULT: $label -> SKIPPED (no macOS \`leaks\`; on Linux use ASan/LSan)"
+        return 0
+    fi
+    echo "running under macOS leaks (--atExit); a leak is the EXPECTED red"
+    MallocStackLogging=1 leaks --atExit -- "$bin" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "RESULT: $label -> leaks found NONE, the leak did NOT reproduce -- FAIL" >&2
+        return 1
+    fi
+    echo "RESULT: $label -> leaks reported a leak (rc=$rc) -- PASS (leak reproduced pre-fix)"
+    return 0
+}
+
 # --- fix #2: array-shift alignment -----------------------------------------
 bin_remove="$(build_test test_remove_address "$here/test_remove_address.c")"
 
@@ -203,6 +229,17 @@ bin_nocap="$(build_test test_address_cap_nocap "$here/test_address_cap.c" -DTEST
 bin_realloc="$(build_test test_realloc_safety "$here/test_realloc_safety.c")"
 bin_realloc_buggy="$(build_test test_realloc_safety_buggy "$here/test_realloc_safety.c" \
                   -DTEST_REALLOC_BUGGY)"
+# Error-path leak fix: free new_hostnames (+ element strings) on the accumulate
+# nomem path. The FIXED build is the default test_realloc_safety above (its
+# nomem branch frees the temp hostname array exactly like the success tail), so
+# the run_test under `leaks` already asserts GREEN (0 leaks) for this fix.
+#   omit : -DTEST_OMIT_HOSTNAMES_FREE drops that free -> the nomem path orphans
+#          the temp hostname array + its element strings (no other owner) ->
+#          `leaks` reports them. This is the TDD red. A leak is only observable
+#          under `leaks` (libgmalloc/ASan trap OOB/double-free, not leaks; a
+#          plain run sees nothing), so the red assertion below is leaks-gated.
+bin_realloc_omit_hn="$(build_test test_realloc_safety_omit_hostnames \
+                  "$here/test_realloc_safety.c" -DTEST_OMIT_HOSTNAMES_FREE)"
 
 # --- fix #1: connection-max-lifetime quiescence guard ----------------------
 # Two builds from one source:
@@ -222,8 +259,9 @@ fail=0
 run_test    "$bin_remove" 0 "test_remove_address (fix #2 alignment)"     || fail=1
 run_test    "$bin_cap"    0 "test_address_cap (fix #3 cap, fixed build)" || fail=1
 run_nonzero "$bin_nocap"    "test_address_cap (fix #3, NO-CAP bug reproduction)" || fail=1
-run_test    "$bin_realloc" 0 "test_realloc_safety (fix #4 all-or-nothing, fixed build)" || fail=1
+run_test    "$bin_realloc" 0 "test_realloc_safety (fix #4 all-or-nothing + new_hostnames free, fixed build)" || fail=1
 run_nonzero "$bin_realloc_buggy" "test_realloc_safety (fix #4, BUGGY-writeback UAF/leak reproduction)" || fail=1
+run_leaks_must_leak "$bin_realloc_omit_hn" "test_realloc_safety (new_hostnames error-path leak, OMIT-FREE leak reproduction)" || fail=1
 run_test    "$bin_lifetime" 0 "test_lifetime_quiescent (fix #1 quiescence guard, fixed build)" || fail=1
 run_nonzero "$bin_lifetime_prefix" "test_lifetime_quiescent (fix #1, NO-GUARD bug reproduction)" || fail=1
 
