@@ -47,6 +47,23 @@ mkdir -p "$out"
 
 cc="${CC:-cc}"
 
+# Does the linker support GNU ld's --wrap? (GNU ld / lld: yes; Apple ld: no.)
+# One test below (test_dns_resolve_integration) intercepts getaddrinfo via
+# --wrap, so it can only build where --wrap is available. Probe by actually
+# linking a tiny program that wraps a symbol -- more reliable than sniffing
+# `uname`, since a Linux box could in principle use a non-GNU linker and macOS
+# could (rarely) have an lld in front. Result -> wrap_supported=yes|no.
+wrap_supported=no
+{
+    _wrap_probe_dir="$(mktemp -d "${out:-${TMPDIR:-/tmp}}/wrapprobe.XXXXXX")"
+    printf 'int __wrap_probe_fn(void){return 0;}\nint probe_fn(void);\nint main(void){return probe_fn();}\n' \
+        > "$_wrap_probe_dir/p.c"
+    if "$cc" -Wl,--wrap=probe_fn "$_wrap_probe_dir/p.c" -o "$_wrap_probe_dir/p" >/dev/null 2>&1; then
+        wrap_supported=yes
+    fi
+    rm -rf "$_wrap_probe_dir"
+} || true
+
 # config.h carries the HAVE_KQUEUE/HAVE_EPOLL event-mechanism define that
 # nc_core.h requires; run ./configure first if it is missing.
 if [ ! -f "$root/config.h" ]; then
@@ -93,14 +110,22 @@ for a in "${archives[@]}"; do
     fi
 done
 
-# build_test <binary-name> <test-source> [extra-cflags...]
+# build_test <binary-name> <test-source> [extra-cflags...] [WRAP_LDFLAGS <ldflags...>]
 # Compiles the test source against the shared production objects + archives.
+# Any args BEFORE a literal WRAP_LDFLAGS token are extra COMPILE flags (e.g.
+# -DTEST_FOO); any args AFTER it are extra LINK flags (e.g. -Wl,--wrap=...).
+# The token is optional -- existing callers pass only compile flags.
 build_test() {
     local name="$1" tsrc="$2"; shift 2
     local tobj="$out/$name.o" bin="$out/$name"
-    "$cc" -c "${cflags[@]}" "${extra_cflags[@]}" "$@" "${incs[@]}" \
+    local cextra=() lextra=() seen_sep=0 arg
+    for arg in "$@"; do
+        if [ "$arg" = "WRAP_LDFLAGS" ]; then seen_sep=1; continue; fi
+        if [ "$seen_sep" -eq 0 ]; then cextra+=("$arg"); else lextra+=("$arg"); fi
+    done
+    "$cc" -c "${cflags[@]}" "${extra_cflags[@]}" "${cextra[@]}" "${incs[@]}" \
         "$tsrc" -o "$tobj"
-    "$cc" -g -O0 "${extra_ldflags[@]}" \
+    "$cc" -g -O0 "${extra_ldflags[@]}" "${lextra[@]}" \
         "$tobj" "${objs[@]}" "${archives[@]}" \
         -lm -lpthread -o "$bin"
     echo "built $bin" >&2     # progress to stderr; stdout carries only the path
@@ -316,6 +341,22 @@ bin_dnsoom_prefix="$(build_test test_dns_resolve_oom_prefix \
 # this is straight-line logic, no pre-fix red variant to stage.
 bin_statshttp="$(build_test test_stats_http "$here/test_stats_http.c")"
 
+# --- prod-hardening #4: real DNS-resolve pipeline integration (Linux only) ---
+# Drives the REAL server_dns_resolve() across multiple cycles by intercepting
+# getaddrinfo()/freeaddrinfo() (and nc_usec_now() for a deterministic clock)
+# with GNU ld's --wrap. This exercises the real accumulate/expire/remove merge
+# over a real struct server_dns -- the code path the round-2 memory-safety bugs
+# lived in -- not a mirror. --wrap is GNU ld only, so this test only BUILDS
+# where the linker supports it; on macOS (Apple ld) it is cleanly SKIPPED. When
+# built, it is run like the others (expected rc 0).
+bin_dnsintegration=""
+if [ "$wrap_supported" = "yes" ]; then
+    bin_dnsintegration="$(build_test test_dns_resolve_integration \
+        "$here/test_dns_resolve_integration.c" \
+        WRAP_LDFLAGS \
+        -Wl,--wrap=getaddrinfo -Wl,--wrap=freeaddrinfo -Wl,--wrap=nc_usec_now)"
+fi
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -333,6 +374,12 @@ run_nonzero "$bin_dnsinit_prefix" "test_dns_init_deinit (prod-hardening #1, NO-N
 run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-count, fixed build)" || fail=1
 run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-REVERT inconsistent-dns reproduction)" || fail=1
 run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware stats classify+format)" || fail=1
+if [ "$wrap_supported" = "yes" ]; then
+    run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
+else
+    echo "=== test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline) ==="
+    echo "RESULT: test_dns_resolve_integration -> SKIPPED (linker has no --wrap; GNU ld / Linux only -- on macOS the accumulate/expire/remove merge is covered by test_dns_resolve_oom + the other server_dns tests)"
+fi
 
 echo
 if [ "$fail" -ne 0 ]; then
