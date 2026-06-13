@@ -1085,7 +1085,15 @@ server_dns_init(struct server *server)
         return NC_OK; /* Already initialized */
     }
     
-    dns = nc_alloc(sizeof(struct server_dns));
+    /*
+     * nc_zalloc (not nc_alloc): zero the whole struct up front so EVERY pointer
+     * field starts NULL even if a later code path forgets one. The explicit NULL
+     * inits below are kept for documentation, but the zalloc is the belt-and-
+     * braces guarantee -- without it, if the FIRST DNS resolve fails the dns is
+     * only partially populated, and server_dns_deinit() would nc_free() an
+     * uninitialised pointer (e.g. last_connected / request_counts) -> wild free.
+     */
+    dns = nc_zalloc(sizeof(struct server_dns));
     if (dns == NULL) {
         return NC_ENOMEM;
     }
@@ -1110,6 +1118,8 @@ server_dns_init(struct server *server)
     dns->last_latency_check = NULL;
     dns->failure_counts = NULL;
     dns->last_seen = NULL;
+    dns->last_connected = NULL;
+    dns->request_counts = NULL;
     dns->hostnames = NULL;
     
     /* Enhanced health and zone initialization */
@@ -1428,9 +1438,8 @@ server_dns_resolve(struct server *server)
              * a later server_dns_deinit(). Do NOT touch dns->hostnames element
              * strings -- the per-element string_init loop below has not run, so
              * that array's contents are uninitialized; free only the raw array.
-             * new_addresses is already adopted into dns->addresses (above), so
-             * deinit owns it -- don't free it here. The temporary new_hostnames
-             * list is still ours; free it via the shared helper.
+             * The temporary new_hostnames list is still ours; free it via the
+             * shared helper.
              */
             if (dns->latencies != NULL)          { nc_free(dns->latencies);          dns->latencies = NULL; }
             if (dns->last_latency_check != NULL)  { nc_free(dns->last_latency_check);  dns->last_latency_check = NULL; }
@@ -1439,6 +1448,23 @@ server_dns_resolve(struct server *server)
             if (dns->last_connected != NULL)      { nc_free(dns->last_connected);      dns->last_connected = NULL; }
             if (dns->request_counts != NULL)      { nc_free(dns->request_counts);      dns->request_counts = NULL; }
             if (dns->hostnames != NULL)           { nc_free(dns->hostnames);           dns->hostnames = NULL; }
+            /*
+             * CRITICAL: revert the adoption too. We set dns->addresses =
+             * new_addresses and dns->naddresses = new_naddresses above. If we
+             * leave those set while the parallel tracking arrays are NULL, the
+             * dns is INCONSISTENT: naddresses > 0 but latencies/last_connected/
+             * etc. are NULL, so the next client request or DNS tick that indexes
+             * a parallel array NULL-derefs. Roll the adoption all the way back to
+             * an EMPTY, self-consistent dns (addresses NULL, naddresses 0).
+             * new_addresses lives in dns->addresses now, so nc_free(dns->addresses)
+             * releases it -- do not also free new_addresses separately.
+             * last_resolved is NOT set on this path (it is only assigned after
+             * the init loop below), so it stays at its prior value -- 0 for a
+             * genuine first resolve -- and server_dns_resolve_due() reports the
+             * server as due, so the very next tick retries the resolve cleanly.
+             */
+            if (dns->addresses != NULL) { nc_free(dns->addresses); dns->addresses = NULL; }
+            dns->naddresses = 0;
             free_hostnames_temp(new_hostnames, new_naddresses);
             return NC_ENOMEM;
         }
@@ -2016,8 +2042,12 @@ server_select_best_address(struct server *server)
         }
         
         /* Apply zone-aware routing: zone_weight% preference for same-zone servers */
-        /* random()/srandom() (seeded in nc_random.c) -- better distribution
-         * than rand() and avoids the unseeded, lock-stepped default sequence. */
+        /* random() is seeded once unconditionally at process startup in
+         * nc_pre_run() (src/nc.c), so it is seeded here for every pool regardless
+         * of distribution -- better distribution than rand() and not the
+         * unseeded, lock-stepped default sequence. (srandom() also runs on the
+         * distribution:random hashing path in hashkit/nc_random.c, but that does
+         * not cover distribution:ketama, which is why the startup seed exists.) */
         rand_val = (uint32_t)random() % 100;
         
         /* Occasionally (~5% of time) probe a random server to refresh latency measurements */
@@ -2581,8 +2611,19 @@ server_health_check(struct server *server, uint32_t addr_idx)
         dns->last_health_check = nc_calloc(dns->max_addresses, sizeof(int64_t));
         dns->health_check_interval = 30000000LL; /* 30 seconds */
         dns->consecutive_failures_limit = pool->dns_failure_threshold;
-        
+
+        /*
+         * All-or-nothing + self-healing. The pair is indexed in lock-step
+         * below (last_health_check[addr_idx], then health_scores[addr_idx]). If
+         * one calloc succeeded and the other returned NULL, leaving the live one
+         * set would make the next call skip this init block (health_scores !=
+         * NULL) and then deref the NULL partner -> crash. So on any partial
+         * failure free BOTH, NULL BOTH, and bail; the next call sees both NULL
+         * and retries the init cleanly.
+         */
         if (dns->health_scores == NULL || dns->last_health_check == NULL) {
+            if (dns->health_scores != NULL)     { nc_free(dns->health_scores);     dns->health_scores = NULL; }
+            if (dns->last_health_check != NULL) { nc_free(dns->last_health_check); dns->last_health_check = NULL; }
             return NC_ERROR;
         }
         uint32_t i;

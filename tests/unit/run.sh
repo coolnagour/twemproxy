@@ -269,6 +269,41 @@ bin_dynep="$(build_test test_dynamic_endpoint "$here/test_dynamic_endpoint.c")"
 bin_dynep_prefix="$(build_test test_dynamic_endpoint_prefix \
                   "$here/test_dynamic_endpoint.c" -DTEST_PREFIX_RO_AUTODETECT)"
 
+# NOTE: the "fix #N" labels ABOVE refer to the earlier hardening campaign. The
+# two tests BELOW cover the prod-hardening round (this file's bug numbers), kept
+# named "prod-hardening #1/#2" so they do not collide with the labels above.
+
+# --- prod-hardening #1: server_dns_init forgets to NULL two pointers ---------
+# Drives the REAL server_dns_init() + REAL server_dns_deinit() on a failed-first-
+# resolve (hostname starts with '/', so the resolver fails offline with zero
+# allocation). Two builds from one source:
+#   fixed : real init (nc_zalloc + NULL inits) leaves last_connected /
+#           request_counts NULL after the failed resolve -> deinit frees nothing
+#           wild -> exit 0, clean under ASan / libgmalloc / leaks.
+#   prefix: -DTEST_PREFIX_NO_NULL_INIT mirrors the PRE-fix init (nc_alloc, the
+#           two NULL inits omitted, struct pre-filled with 0xAB garbage) then
+#           calls the REAL deinit -> deinit nc_free()s two garbage pointers ->
+#           wild free. Asserts the fields are garbage (plain build fails) and the
+#           wild free traps under ASan/libgmalloc. This is the TDD red.
+bin_dnsinit="$(build_test test_dns_init_deinit "$here/test_dns_init_deinit.c")"
+bin_dnsinit_prefix="$(build_test test_dns_init_deinit_prefix \
+                  "$here/test_dns_init_deinit.c" -DTEST_PREFIX_NO_NULL_INIT)"
+
+# --- prod-hardening #2: first-resolution OOM leaves an inconsistent dns ------
+# Mirrors the first-resolution adopt + eager-alloc + alloc-failure cleanup of
+# server_dns_resolve() against a REAL struct server_dns, with an nc_alloc
+# failure-injection shim. Two builds from one source:
+#   fixed : the cleanup reverts the adoption -> empty, self-consistent dns
+#           (naddresses==0, addresses==NULL); a simulated next access is a
+#           guarded no-op -> exit 0, clean under ASan / libgmalloc / leaks.
+#   prefix: -DTEST_PREFIX_NO_REVERT mirrors the PRE-fix cleanup (adoption left
+#           published, parallel arrays NULL) -> inconsistent dns; asserts fire
+#           (plain build fails) and indexing a parallel array NULL-derefs (ASan/
+#           libgmalloc trap). This is the TDD red.
+bin_dnsoom="$(build_test test_dns_resolve_oom "$here/test_dns_resolve_oom.c")"
+bin_dnsoom_prefix="$(build_test test_dns_resolve_oom_prefix \
+                  "$here/test_dns_resolve_oom.c" -DTEST_PREFIX_NO_REVERT)"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (fix #2 alignment)"     || fail=1
@@ -281,6 +316,10 @@ run_test    "$bin_lifetime" 0 "test_lifetime_quiescent (fix #1 quiescence guard,
 run_nonzero "$bin_lifetime_prefix" "test_lifetime_quiescent (fix #1, NO-GUARD bug reproduction)" || fail=1
 run_test    "$bin_dynep" 0 "test_dynamic_endpoint (fix #5 explicit flag, fixed build)" || fail=1
 run_nonzero "$bin_dynep_prefix" "test_dynamic_endpoint (fix #5, -ro AUTO-DETECT footgun reproduction)" || fail=1
+run_test    "$bin_dnsinit" 0 "test_dns_init_deinit (prod-hardening #1 NULL-init, fixed build)" || fail=1
+run_nonzero "$bin_dnsinit_prefix" "test_dns_init_deinit (prod-hardening #1, NO-NULL-INIT wild-free reproduction)" || fail=1
+run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-adoption, fixed build)" || fail=1
+run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-REVERT inconsistent-dns reproduction)" || fail=1
 
 # Heap-guard demonstration: only meaningful (and only safe) under a guard.
 if [ "${LIBGMALLOC:-0}" = "1" ] && [ -f /usr/lib/libgmalloc.dylib ]; then
