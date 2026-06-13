@@ -2049,9 +2049,9 @@ server_select_best_address(struct server *server)
         /* random() is seeded once unconditionally at process startup in
          * nc_pre_run() (src/nc.c), so it is seeded here for every pool regardless
          * of distribution -- better distribution than rand() and not the
-         * unseeded, lock-stepped default sequence. (srandom() also runs on the
-         * distribution:random hashing path in hashkit/nc_random.c, but that does
-         * not cover distribution:ketama, which is why the startup seed exists.) */
+         * unseeded, lock-stepped default sequence. (That startup seed is the only
+         * srandom() call now; the old distribution:random reseed in
+         * hashkit/nc_random.c was removed as redundant.) */
         rand_val = (uint32_t)random() % 100;
         
         /* Occasionally (~5% of time) probe a random server to refresh latency measurements */

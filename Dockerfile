@@ -17,8 +17,14 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build twemproxy (using debug=full like the working example)
-RUN autoreconf -fvi && \
+# Build twemproxy (using debug=full like the working example).
+# Extract the vendored yaml BEFORE autoreconf: contrib/Makefile.am declares
+# `SUBDIRS = yaml-0.1.4`, so automake (run by autoreconf) needs that directory
+# to already exist. configure also re-extracts it, but autoreconf runs first.
+# Extracting here means the build works from a clean context with only the
+# tarball (the unpacked tree is .dockerignore'd to keep the COPY context small).
+RUN tar xzf contrib/yaml-0.1.4.tar.gz -C contrib && \
+    autoreconf -fvi && \
     CFLAGS="-ggdb3 -O0" ./configure \
         --prefix=/usr/local \
         && \
@@ -66,7 +72,7 @@ EXPOSE 6378 6379 22222
 
 # Labels
 LABEL maintainer="Twemproxy Enhanced" \
-      version="1.0.0" \
+      version="2.1.2" \
       description="Twemproxy with cloud zone detection and latency-based routing" \
       org.opencontainers.image.title="twemproxy-enhanced" \
       org.opencontainers.image.description="Redis proxy with intelligent zone-aware routing" \

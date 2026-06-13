@@ -20,7 +20,7 @@ version: '3.3'
 
 services:
   twemproxy:
-    image: bobbymaher/twemproxy:2.1.1
+    image: bobbymaher/twemproxy:2.1.2
     ports:
       - "6378:6378"  # Redis read port
       - "6379:6379"  # Redis write port
@@ -754,7 +754,7 @@ If you are running twemproxy in production, read the [recommendation document](n
 ## docker hub deployment
 
 ```
-TAG=2.1.1
+TAG=2.1.2
 docker build -t twemproxy-enhanced .
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:$TAG
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:latest

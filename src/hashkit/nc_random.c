@@ -95,7 +95,7 @@ random_update(struct server_pool *pool)
             return NC_ENOMEM;
         }
 
-        srandom((uint32_t)time(NULL));
+        /* PRNG seeding moved to nc_pre_run() (src/nc.c): seeded once at startup. */
 
         pool->continuum = continuum;
         pool->nserver_continuum = nserver_continuum;

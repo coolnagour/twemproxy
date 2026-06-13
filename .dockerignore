@@ -1,0 +1,103 @@
+# Shrink the `COPY . .` build context. The Dockerfile builds from scratch
+# (extract vendored yaml -> autoreconf -> configure -> make), so every generated
+# autotools file and every previously-built object/archive is regenerated inside
+# the image -- none of them should be copied in. In particular the developer's
+# locally-built sub-library archives (src/*/libevent.a etc.) MUST be excluded:
+# they are often built for the host arch (e.g. a macOS kqueue libevent.a), and if
+# copied in, make can link the stale archive instead of rebuilding it -> the
+# wrong event backend and undefined-symbol link failures inside the image.
+#
+# Docker .dockerignore globs are matched against the FULL path from the context
+# root, and `*` does not cross `/`. So `*.a` alone matches ONLY a top-level *.a;
+# nested artifacts need a `**/` prefix. That subtlety is why the patterns below
+# are doubled (root + `**/`).
+#
+# Keep: src/, m4/, configure.ac, Makefile.am, contrib/Makefile.am,
+#       contrib/yaml-0.1.4.tar.gz, docker-entrypoint.sh.
+
+# Version control
+.git
+.gitignore
+.travis.yml
+travis.sh
+
+# Docker files themselves (not needed inside the build)
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Autotools cache + regenerated output (autoreconf/configure rebuild these)
+autom4te.cache
+aclocal.m4
+configure
+configure.scan
+autoscan.log
+libtool
+stamp-h1
+Makefile
+Makefile.in
+**/Makefile
+**/Makefile.in
+config.h
+config.h.in
+config.h.in~
+config.log
+config.status
+config/config.guess
+config/config.sub
+config/depcomp
+config/install-sh
+config/ltmain.sh
+config/missing
+config/compile
+config/test-driver
+
+# Build artifacts (root + any depth)
+.deps
+.libs
+**/.deps
+**/.libs
+*.o
+**/*.o
+*.lo
+**/*.lo
+*.a
+**/*.a
+*.la
+**/*.la
+*.so
+**/*.so
+*.dep
+**/*.dep
+*.gcda
+**/*.gcda
+*.gcno
+**/*.gcno
+*.gcov
+**/*.gcov
+core
+**/core
+src/nutcracker
+
+# The yaml tarball is re-extracted during the build; drop the unpacked tree.
+contrib/yaml-0.1.4
+
+# Docs / packaging / tests not needed to build the binary.
+# NOTE: do NOT exclude man/ -- the top-level Makefile.am has
+# `dist_man_MANS = man/nutcracker.8`, so `make` needs that file present.
+notes
+rpm
+logs
+tests
+package.sh
+run_test.sh
+
+# Editor / OS cruft
+.idea
+.vscode
+.DS_Store
+**/.DS_Store
+*.swp
+**/*.swp
+*.swo
+**/*.swo
