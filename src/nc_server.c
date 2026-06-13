@@ -1054,6 +1054,13 @@ server_pool_deinit(struct array *server_pool)
         }
 
         server_deinit(&sp->server);
+        /*
+         * redis_master is array_null'd at transform time and populated only for
+         * a redis primary pool. server_deinit handles both the empty and the
+         * populated case and frees each server's dynamic DNS struct via
+         * server_dns_deinit, so the master servers + their DNS state do not leak.
+         */
+        server_deinit(&sp->redis_master);
 
         log_debug(LOG_DEBUG, "deinit pool %"PRIu32" '%.*s'", sp->idx,
                   sp->name.len, sp->name.data);

@@ -380,6 +380,16 @@ conf_pool_deinit(struct conf_pool *cp)
     }
     array_deinit(&cp->server);
 
+    /*
+     * redis_master is array_init'd in conf_pool_init (always allocated) and may
+     * hold a conf_server for a redis primary; tear it down the same way as the
+     * server array so neither the element strings nor the backing array leak.
+     */
+    while (array_n(&cp->redis_master) != 0) {
+        conf_server_deinit(array_pop(&cp->redis_master));
+    }
+    array_deinit(&cp->redis_master);
+
     log_debug(LOG_VVERB, "deinit conf pool %p", cp);
 }
 
@@ -1855,6 +1865,15 @@ conf_destroy(struct conf *cf)
         conf_pool_deinit(array_pop(&cf->pool));
     }
     array_deinit(&cf->pool);
+
+    /*
+     * global.user / global.group are string_copy'd (default) or string_duplicate'd
+     * (conf_set_string) during parse -- both allocate. Free them here. string_deinit
+     * is a no-op on the still-init'd (NULL) strings of a conf that failed before the
+     * global section was parsed.
+     */
+    string_deinit(&cf->global.user);
+    string_deinit(&cf->global.group);
 
     nc_free(cf);
 }
