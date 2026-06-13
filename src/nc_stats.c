@@ -93,9 +93,6 @@ stats_describe(void)
     log_stderr("cloud multi-zone optimizations:");
     log_stderr("  same_zone_selections \"# times same-zone server was selected\"");
     log_stderr("  cross_zone_selections \"# times cross-zone server was selected\"");
-    log_stderr("  connection_pool_hits \"# connection pool cache hits\"");
-    log_stderr("  connection_pool_miss \"# connection pool cache misses\"");
-    log_stderr("  health_score_avg     \"average health score across all servers\"");
 }
 
 static void
