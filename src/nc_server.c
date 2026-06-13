@@ -2481,7 +2481,7 @@ server_detect_zones_by_latency(struct server *server)
     
     /* Fallback to range-based for very small latencies where 10% might be too small */
     uint32_t latency_range = max_latency - min_latency;
-    uint32_t range_threshold = min_latency + (latency_range / 6); /* 15% of range */
+    uint32_t range_threshold = min_latency + (latency_range / 6); /* ~16.7% (range/6) */
     
     /* Use the larger of the two thresholds to ensure meaningful separation */
     low_latency_threshold = (percentage_threshold > range_threshold) ? 

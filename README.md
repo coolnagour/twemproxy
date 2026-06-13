@@ -585,6 +585,24 @@ A quick checklist:
 + Use CFLAGS="-O3 -fno-strict-aliasing" ./configure && make
 + `autoreconf -fvi && ./configure` needs `automake` and `libtool` installed
 
+### Building on arm64 / aarch64
+
+This fork builds and runs on both x86_64 and arm64 (aarch64) — Apple Silicon
+Macs and arm64 Linux (for example AWS Graviton). The vendored
+`contrib/yaml-0.1.4` was repacked with up-to-date `config.guess` / `config.sub`
+so its `./configure` recognises aarch64; without that the bundled libyaml build
+fails on arm64 with an "unrecognized system" error.
+
+Build it the same way as on x86_64:
+
+    $ autoreconf -fvi
+    $ ./configure
+    $ make
+
+Note: a binary built on one architecture will not run on the other. Build (or
+rebuild in a matching container) for the architecture you deploy on. The Docker
+image is built per-architecture for the same reason.
+
 ## Features
 
 * Supports a master-worker process model (new)
@@ -622,8 +640,8 @@ A quick checklist:
       -o, --output=S         : set logging file (default: stderr)
       -c, --conf-file=S      : set configuration file (default: conf/nutcracker.yml)
       -s, --stats-port=N     : set stats monitoring port (default: 22222)
-      -a, --stats-addr=S     : set stats monitoring ip (default: 0.0.0.0)
-      -i, --stats-interval=N : set stats aggregation interval in msec (default: 30000 msec)
+      -a, --stats-addr=S     : set stats monitoring ip (default: 127.0.0.1)
+      -i, --stats-interval=N : set stats aggregation interval in msec (default: 10000 msec)
       -p, --pid-file=S       : set pid file (default: off)
       -m, --mbuf-size=N      : set size of mbuf chunk in bytes (default: 16384 bytes)
 
@@ -711,7 +729,7 @@ Use the -t or --test-conf argument to check a YAML config for syntax errors.
 
 Observability in twemproxy is through logs and stats.
 
-twemproxy exposes stats per server pool and per server on the stats monitoring port. Stats are JSON key-value pairs, with the keys being counter names. By default stats are on port 22222 and aggregated every 30 seconds. Both are configurable on start with -c/--conf-file and -i/--stats-interval. Print the description of all stats with -D or --describe-stats:
+twemproxy exposes stats per server pool and per server on the stats monitoring port. Stats are JSON key-value pairs, with the keys being counter names. By default stats are bound to 127.0.0.1 on port 22222 and aggregated every 10 seconds. The bind address, port and interval are configurable on start with -a/--stats-addr, -s/--stats-port and -i/--stats-interval. Print the description of all stats with -D or --describe-stats:
 
     $ nutcracker --describe-stats
 
@@ -737,7 +755,7 @@ twemproxy exposes stats per server pool and per server on the stats monitoring p
       out_queue           "# requests in outgoing queue"
       out_queue_bytes     "current request bytes in outgoing queue"
 
-Logging is only available when twemproxy is built with logging enabled. By default logs go to stderr. Use -o or --output to write to a file. On a running twemproxy you can turn log levels up and down with SIGTTIN and SIGTTOU, and reopen the log file with SIGHUP.
+Logging is only available when twemproxy is built with logging enabled. By default logs go to stderr. Use -o or --output to write to a file. On a running twemproxy you can turn log levels up and down with SIGTTIN and SIGTTOU, and reopen the log file with SIGUSR1 (useful for log rotation). SIGHUP is config reload, not log reopen.
 
 ## Pipelining
 
