@@ -1,15 +1,20 @@
-# Multi-stage Docker build for twemproxy with cloud zone detection
-# Stage 1: Build container using Alpine (like the working example)
-FROM --platform=linux/amd64 alpine:3.19 AS builder
+# Multi-stage Docker build for twemproxy with cloud zone detection.
+#
+# glibc base (debian:bookworm-slim) and multi-arch: no `--platform` is pinned on
+# either stage, so `docker buildx` builds natively per arch (amd64 primary +
+# arm64). The vendored libyaml tarball was repacked at source with aarch64-aware
+# config.guess/config.sub, so it autoreconfs cleanly on arm64 with no script swap.
+#
+# Stage 1: build
+FROM debian:bookworm-slim AS builder
 
-# Install build dependencies (Alpine style)
-RUN apk --no-cache add \
-    alpine-sdk \
+# Build dependencies. gcc + make come with build-essential.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     autoconf \
     automake \
     libtool \
-    yaml-dev \
-    git
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /build
@@ -17,38 +22,51 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build twemproxy (using debug=full like the working example).
+# Build twemproxy.
 # Extract the vendored yaml BEFORE autoreconf: contrib/Makefile.am declares
 # `SUBDIRS = yaml-0.1.4`, so automake (run by autoreconf) needs that directory
 # to already exist. configure also re-extracts it, but autoreconf runs first.
 # Extracting here means the build works from a clean context with only the
 # tarball (the unpacked tree is .dockerignore'd to keep the COPY context small).
+#
+# No CFLAGS are passed to ./configure: the binary inherits configure.ac's
+# hardened release defaults (-O2 -g -D_FORTIFY_SOURCE=2 -fstack-protector-strong
+# -fPIE, link -fPIE -pie -Wl,-z,relro,-z,now). Passing CFLAGS here would
+# override (and disable) that hardening.
 RUN tar xzf contrib/yaml-0.1.4.tar.gz -C contrib && \
     autoreconf -fvi && \
-    CFLAGS="-ggdb3 -O0" ./configure \
+    ./configure \
         --prefix=/usr/local \
         && \
-    make -j$(nproc) && \
+    make -j"$(nproc)" && \
     make install DESTDIR=/tmp/install
 
-# Verify the build
+# Verify the build and inspect the binary's dynamic dependencies. The vendored
+# yaml is linked statically (.a), so `ldd` here should NOT list libyaml -- which
+# is why the runtime stage installs no libyaml package. If a future change makes
+# the build link libyaml dynamically, this `ldd` output (visible in the build
+# log) will show it, and libyaml-0-2 must then be added to the runtime stage.
 RUN /tmp/install/usr/local/sbin/nutcracker --version && \
     echo "Checking if stats are compiled in:" && \
-    /tmp/install/usr/local/sbin/nutcracker --describe-stats | head -5
+    /tmp/install/usr/local/sbin/nutcracker --describe-stats | head -5 && \
+    echo "=== ldd nutcracker (runtime shared-lib deps) ===" && \
+    ldd /tmp/install/usr/local/sbin/nutcracker
 
-# Stage 2: Runtime container (Alpine)
-FROM --platform=linux/amd64 alpine:3.19 AS runtime
+# Stage 2: runtime
+FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies (Alpine)
-RUN apk --no-cache add \
-    yaml \
+# Runtime dependencies. No libyaml package: the vendored yaml is linked
+# statically into the binary (verified via `ldd` in the builder stage).
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     dumb-init \
-    bash
+    bash \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create user for running twemproxy (Alpine style)
-RUN adduser -D -s /bin/false twemproxy && \
+# Create user for running twemproxy (Debian style). --system makes a service
+# account with no login shell; --no-create-home keeps the image slim.
+RUN adduser --system --no-create-home --group twemproxy && \
     mkdir -p /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy /var/run/twemproxy && \
     chown -R twemproxy:twemproxy /var/lib/twemproxy /var/log/twemproxy /etc/twemproxy /var/run/twemproxy
 
