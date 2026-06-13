@@ -67,6 +67,28 @@ struct continuum {
     uint32_t value;  /* hash value */
 };
 
+/*
+ * EAGER PER-ADDRESS ARRAY INVARIANT (read before adding a new array below).
+ *
+ * The arrays marked "eager" are parallel: each is allocated and kept at exactly
+ * naddresses entries, and index i in every one describes the SAME address as
+ * dns->addresses[i]. (latencies, last_latency_check, failure_counts, last_seen,
+ * last_connected, request_counts, hostnames are eager. The health_* and zone_*
+ * arrays are allocated lazily on first use -- they are NOT eager, so they are
+ * always NULL-guarded individually.)
+ *
+ * If you add a NEW eager per-address array, you MUST edit ALL FOUR sites or the
+ * arrays silently desync (wrong index -> wrong address) or leak/double-free
+ * (all in src/nc_server.c):
+ *   1. server_dns_resolve() first-resolution path  -- initial nc_alloc + the
+ *      per-element init loop (and free it on the alloc-failure cleanup there).
+ *   2. server_dns_resolve() accumulate-grow path    -- the nc_realloc step that
+ *      grows every array by one before appending, plus the new element's init.
+ *   3. server_dns_remove_address_at()               -- shift entries [i+1..]
+ *      down by one and clear/deinit the freed tail slot.
+ *   4. server_dns_deinit()                           -- free it (NULL-guarded;
+ *      string arrays also string_deinit each element).
+ */
 struct server_dns {
     struct string      hostname;          /* Original hostname */
     struct sockinfo    *addresses;       /* Array of resolved IPs */

@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <arpa/inet.h>  /* inet_ntop/inet_pton -- not transitively guaranteed off _GNU_SOURCE */
 #include <nc_core.h>
 #include <nc_conf.h>
 #include <nc_server.h>

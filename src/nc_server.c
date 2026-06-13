@@ -18,6 +18,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <arpa/inet.h>  /* inet_ntop/inet_pton -- not transitively guaranteed off _GNU_SOURCE */
 
 #include <nc_core.h>
 #include <nc_server.h>
@@ -1316,6 +1317,30 @@ server_dns_remove_address_at(struct server_dns *dns, uint32_t i)
     dns->naddresses--;
 }
 
+/*
+ * Free the temporary, parallel hostname array produced by
+ * nc_resolve_multi_with_hostnames(): each captured per-element canonical
+ * string, then the array itself. NULL-safe (both the array and each element).
+ * Every exit path of server_dns_resolve() that owns new_hostnames calls this
+ * with the same element count, so the frees stay identical and the paths are
+ * mutually exclusive (no double-free).
+ */
+static void
+free_hostnames_temp(char **hostnames, uint32_t n)
+{
+    uint32_t i;
+
+    if (hostnames == NULL) {
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        if (hostnames[i] != NULL) {
+            nc_free(hostnames[i]);
+        }
+    }
+    nc_free(hostnames);
+}
+
 rstatus_t
 server_dns_resolve(struct server *server)
 {
@@ -1355,15 +1380,8 @@ server_dns_resolve(struct server *server)
         if (new_addresses) {
             nc_free(new_addresses);
         }
-        if (new_hostnames != NULL) {
-            for (uint32_t i = 0; i < new_naddresses; i++) {
-                if (new_hostnames[i] != NULL) {
-                    nc_free(new_hostnames[i]);
-                }
-            }
-            nc_free(new_hostnames);
-        }
-        
+        free_hostnames_temp(new_hostnames, new_naddresses);
+
         return status;
     }
     
@@ -1400,12 +1418,31 @@ server_dns_resolve(struct server *server)
         dns->request_counts = nc_alloc(dns->naddresses * sizeof(uint64_t));
         dns->hostnames = nc_alloc(dns->naddresses * sizeof(struct string));
         
-        if (dns->latencies == NULL || dns->last_latency_check == NULL || 
-            dns->failure_counts == NULL || dns->last_seen == NULL || 
+        if (dns->latencies == NULL || dns->last_latency_check == NULL ||
+            dns->failure_counts == NULL || dns->last_seen == NULL ||
             dns->last_connected == NULL || dns->request_counts == NULL || dns->hostnames == NULL) {
+            /*
+             * First-resolution alloc failure: some tracking arrays may have
+             * been allocated before one nc_alloc() returned NULL. Free each
+             * (NULL-safe) and reset to NULL so the half-built dns is clean for
+             * a later server_dns_deinit(). Do NOT touch dns->hostnames element
+             * strings -- the per-element string_init loop below has not run, so
+             * that array's contents are uninitialized; free only the raw array.
+             * new_addresses is already adopted into dns->addresses (above), so
+             * deinit owns it -- don't free it here. The temporary new_hostnames
+             * list is still ours; free it via the shared helper.
+             */
+            if (dns->latencies != NULL)          { nc_free(dns->latencies);          dns->latencies = NULL; }
+            if (dns->last_latency_check != NULL)  { nc_free(dns->last_latency_check);  dns->last_latency_check = NULL; }
+            if (dns->failure_counts != NULL)      { nc_free(dns->failure_counts);      dns->failure_counts = NULL; }
+            if (dns->last_seen != NULL)           { nc_free(dns->last_seen);           dns->last_seen = NULL; }
+            if (dns->last_connected != NULL)      { nc_free(dns->last_connected);      dns->last_connected = NULL; }
+            if (dns->request_counts != NULL)      { nc_free(dns->request_counts);      dns->request_counts = NULL; }
+            if (dns->hostnames != NULL)           { nc_free(dns->hostnames);           dns->hostnames = NULL; }
+            free_hostnames_temp(new_hostnames, new_naddresses);
             return NC_ENOMEM;
         }
-        
+
         /* Initialize data for all addresses */
         for (i = 0; i < dns->naddresses; i++) {
             dns->latencies[i] = DEFAULT_LATENCY_USEC;
@@ -1455,15 +1492,8 @@ server_dns_resolve(struct server *server)
                   dns->naddresses, dns->hostname.len, dns->hostname.data);
         
         /* Clean up temporary hostname array */
-        if (new_hostnames != NULL) {
-            for (i = 0; i < new_naddresses; i++) {
-                if (new_hostnames[i] != NULL) {
-                    nc_free(new_hostnames[i]);
-                }
-            }
-            nc_free(new_hostnames);
-        }
-        
+        free_hostnames_temp(new_hostnames, new_naddresses);
+
         return NC_OK;
     }
     
@@ -1634,21 +1664,12 @@ server_dns_resolve(struct server *server)
              * one to its old size, the already-grown ones one larger) -- no
              * dangling pointer, no leak. Free BOTH temporary lists the success
              * tail frees: the resolved-address list AND the parallel hostname
-             * array (plus each captured per-element canonical string). This
-             * mirrors the function-tail cleanup exactly (same NULL guard, same
-             * new_naddresses loop bound, same per-element + array free); the
-             * two are mutually-exclusive returns, so no double-free. Bail.
+             * array (via free_hostnames_temp, same as every other exit). The
+             * paths are mutually exclusive returns, so no double-free. Bail.
              */
             log_error("failed to allocate memory for new DNS address");
             if (new_addresses) nc_free(new_addresses);
-            if (new_hostnames != NULL) {
-                for (i = 0; i < new_naddresses; i++) {
-                    if (new_hostnames[i] != NULL) {
-                        nc_free(new_hostnames[i]);
-                    }
-                }
-                nc_free(new_hostnames);
-            }
+            free_hostnames_temp(new_hostnames, new_naddresses);
             return NC_ENOMEM;
         }
     }
@@ -1729,15 +1750,8 @@ server_dns_resolve(struct server *server)
     if (new_addresses) {
         nc_free(new_addresses);
     }
-    if (new_hostnames != NULL) {
-        for (i = 0; i < new_naddresses; i++) {
-            if (new_hostnames[i] != NULL) {
-                nc_free(new_hostnames[i]);
-            }
-        }
-        nc_free(new_hostnames);
-    }
-    
+    free_hostnames_temp(new_hostnames, new_naddresses);
+
     dns->last_resolved = now;
     
     /* Update DNS stats */
@@ -2002,11 +2016,13 @@ server_select_best_address(struct server *server)
         }
         
         /* Apply zone-aware routing: zone_weight% preference for same-zone servers */
-        rand_val = (uint32_t)rand() % 100;
+        /* random()/srandom() (seeded in nc_random.c) -- better distribution
+         * than rand() and avoids the unseeded, lock-stepped default sequence. */
+        rand_val = (uint32_t)random() % 100;
         
         /* Occasionally (~5% of time) probe a random server to refresh latency measurements */
         if (rand_val >= 95 && healthy_count > 1) {
-            uint32_t random_probe = healthy_servers[rand() % healthy_count];
+            uint32_t random_probe = healthy_servers[random() % healthy_count];
             if (random_probe != server->current_addr_idx) {
                 log_debug(LOG_INFO, "🎲 random latency probe: selecting addr %"PRIu32" for '%.*s' (current latency: %"PRIu32"μs)", 
                           random_probe, server->pname.len, server->pname.data, dns->latencies[random_probe]);
@@ -2021,7 +2037,7 @@ server_select_best_address(struct server *server)
         
         if (same_zone_count > 0 && rand_val < pool->zone_weight) {
             /* Select from same-zone servers */
-            selected_idx = same_zone_servers[rand() % same_zone_count];
+            selected_idx = same_zone_servers[random() % same_zone_count];
             stats_server_incr(pool->ctx, server, same_zone_selections);
             stats_server_set(pool->ctx, server, current_latency_us, dns->latencies[selected_idx]);
             
@@ -2037,7 +2053,7 @@ server_select_best_address(struct server *server)
         
         /* Select from all healthy servers (distributed) */
         if (healthy_count > 0) {
-            selected_idx = healthy_servers[rand() % healthy_count];
+            selected_idx = healthy_servers[random() % healthy_count];
             
             if (dns->zone_ids[selected_idx] != dns->local_zone_id) {
                 stats_server_incr(pool->ctx, server, cross_zone_selections);
@@ -2125,15 +2141,30 @@ server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency
         return NC_ERROR;
     }
     
-    /* Update latency with exponential moving average */
+    /*
+     * Update latency with an exponential moving average.
+     *
+     * The stored field stays uint32_t, but the math is done in uint64_t and
+     * saturated to UINT32_MAX. A timed-out replica reports a very large latency;
+     * the old 32-bit `old * 9 + new` overflowed and wrapped to a SMALL value,
+     * which then mis-classified a slow/dead replica as fast and corrupted
+     * zone selection. Clamp the sample to [0, UINT32_MAX] first (negative is
+     * nonsensical), then never let the EWMA wrap.
+     */
     uint32_t old_latency = dns->latencies[addr_idx];
+    uint64_t sample = (latency < 0) ? 0 :
+                      ((uint64_t)latency > UINT32_MAX ? UINT32_MAX : (uint64_t)latency);
     if (dns->latencies[addr_idx] == DEFAULT_LATENCY_USEC) {
-        dns->latencies[addr_idx] = (uint32_t)latency;
+        dns->latencies[addr_idx] = (uint32_t)sample; /* sample already <= UINT32_MAX */
         log_debug(LOG_INFO, "⏱️  initial latency for '%.*s' addr %"PRIu32": %"PRIu32"us",
                   server->pname.len, server->pname.data, addr_idx, dns->latencies[addr_idx]);
     } else {
-        /* 90% old value, 10% new value */
-        dns->latencies[addr_idx] = (dns->latencies[addr_idx] * 9 + (uint32_t)latency) / 10;
+        /* 90% old value, 10% new value -- computed in 64-bit, saturated. */
+        uint64_t ewma = ((uint64_t)dns->latencies[addr_idx] * 9 + sample) / 10;
+        if (ewma > UINT32_MAX) {
+            ewma = UINT32_MAX;
+        }
+        dns->latencies[addr_idx] = (uint32_t)ewma;
         log_debug(LOG_VERB, "⏱️  updated latency for '%.*s' addr %"PRIu32": %"PRIu32"us → %"PRIu32"us (new: %"PRId64"us)",
                   server->pname.len, server->pname.data, addr_idx, old_latency, dns->latencies[addr_idx], latency);
     }
@@ -2673,14 +2704,14 @@ server_discover_cache_endpoints(struct server *server)
             dns->resolve_interval = 15000000LL; /* Set to 15 seconds for managed cache */
             log_debug(LOG_INFO, "🔍 adjusted DNS interval to 15s for managed cache endpoint");
         }
-        
-        /* Try to detect read replica endpoints */
-        if (strstr((char*)dns->hostname.data, "-ro") != NULL || 
-            strstr((char*)dns->hostname.data, "read") != NULL ||
-            strstr((char*)dns->hostname.data, "replica") != NULL) {
-            log_debug(LOG_INFO, "🔍 detected managed cache read replica endpoint");
-        }
+        /*
+         * No "-ro"/"read"/"replica" hostname sniffing here: it only ever logged
+         * a cosmetic line and had zero routing effect. Read-vs-write routing is
+         * now driven solely by the explicit dynamic_endpoint flag (see
+         * conf_server / fix dropping the unsafe -ro auto-detection), so keying
+         * off a substring of the hostname would be misleading.
+         */
     }
-    
+
     return NC_OK;
 }
