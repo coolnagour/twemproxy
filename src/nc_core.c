@@ -436,7 +436,7 @@ core_dns_maintenance(struct context *ctx)
                             cname_str = (const char *)server->dns->hostnames[conn->addr_idx].data;
                         }
                         
-                        log_warn("⏰ CONNECTION LIFETIME EXPIRED: Closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
+                        log_debug(LOG_INFO, "connection lifetime expired: closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
                                  cname_str, conn->addr_idx, server->pname.len, server->pname.data,
                                  (now - conn->connect_start_ts) / 1000000,
                                  pool->connection_max_lifetime / 1000000);
@@ -452,7 +452,7 @@ core_dns_maintenance(struct context *ctx)
             }
             
             if (expired_count > 0) {
-                log_warn("🔄 LIFETIME CHECK: Closed %"PRIu32" expired connections in pool '%.*s' - new connections will trigger server re-selection",
+                log_debug(LOG_INFO, "lifetime check: closed %"PRIu32" expired connections in pool '%.*s' - new connections will trigger server re-selection",
                          expired_count, pool->name.len, pool->name.data);
             }
         }
@@ -469,7 +469,7 @@ core_dns_maintenance(struct context *ctx)
                         /* Show discovered CNAMEs in the log */
                         struct server_dns *dns = server->dns;
                         if (dns != NULL && dns->naddresses > 0) {
-                            log_warn("🔄 periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
+                            log_debug(LOG_INFO, "periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
                                       server->pname.len, server->pname.data, dns->naddresses);
                             uint32_t k;
                             for (k = 0; k < dns->naddresses; k++) {
@@ -492,14 +492,14 @@ core_dns_maintenance(struct context *ctx)
                                     cname_str = (const char *)dns->hostnames[k].data;
                                 }
                                 
-                                log_warn("   → addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);
+                                log_debug(LOG_VERB, "   -> addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);
                             }
                         } else {
-                            log_warn("🔄 periodic DNS update successful for '%.*s' (no addresses found)",
+                            log_debug(LOG_INFO, "periodic DNS update successful for '%.*s' (no addresses found)",
                                       server->pname.len, server->pname.data);
                         }
                     } else {
-                        log_warn("⚠️  periodic DNS update failed for '%.*s'",
+                        log_warn("periodic DNS update failed for '%.*s'",
                                   server->pname.len, server->pname.data);
                     }
                 }

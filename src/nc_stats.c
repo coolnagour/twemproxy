@@ -1708,13 +1708,13 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
             
             /* Validate content fits in buffer */
             if (content_len >= max_content_len) {
-                log_warn("🚨 DNS content too large for stats buffer: %zu bytes", content_len);
+                log_warn("DNS content too large for stats buffer: %zu bytes", content_len);
                 return NC_ERROR;
             }
             
             int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
             if (n < 0 || n >= (int)room) {
-                log_warn("🚨 MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
+                log_warn("MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
                 return NC_ERROR;
             }
             buf->len += (size_t)n;
