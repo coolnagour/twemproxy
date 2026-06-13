@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <getopt.h>
 #include <fcntl.h>
+#include <time.h>          /* time() -- PRNG seed in nc_pre_run */
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
@@ -543,6 +544,26 @@ nc_pre_run(struct instance *nci)
     }
 
     nci->pid = getpid();
+
+    /*
+     * Seed the C library PRNG ONCE, unconditionally, at process startup. The
+     * zone-aware routing path in nc_server.c calls random() for EVERY pool
+     * (random latency-probe sampling + same-zone vs other-zone selection), but
+     * srandom() was previously only called on the distribution:random hashing
+     * path (hashkit/nc_random.c). For the fleet default distribution:ketama that
+     * path never runs, so random() ran from its fixed default seed -- every
+     * process produced the identical "random" sequence, defeating the probe
+     * sampling and biasing zone selection. Seeding here covers EVERY random()
+     * consumer regardless of distribution. Mix in the pid so two processes that
+     * start in the same wall-clock second do not get identical sequences.
+     *
+     * TODO(multi-process): this runs in nc_pre_run, before any worker fork. With
+     * worker_processes > 0 every worker inherits this same seed across fork() and
+     * would share one sequence; a per-worker reseed (srandom(time ^ getpid())
+     * after fork, in the worker init path) is the fuller fix. This deployment
+     * runs single-process, so the startup seed is sufficient today.
+     */
+    srandom((unsigned int)(time(NULL) ^ (getpid() << 16)));
 
     status = signal_init();
     if (status != NC_OK) {

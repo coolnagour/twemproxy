@@ -1700,6 +1700,19 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
         cp->dynamic_endpoint = CONF_DEFAULT_DYNAMIC_ENDPOINT;
     }
 
+    /*
+     * zone_aware routing only kicks in for servers that resolve multiple
+     * addresses, which only happens when dynamic_endpoint is on (it is what
+     * turns on the multi-address DNS resolver). With dynamic_endpoint off there
+     * is a single static address per server, so zone_aware has nothing to route
+     * between -- it is silently a no-op. Both defaults are finalised above, so
+     * warn here rather than let the operator believe zone routing is active.
+     */
+    if (cp->zone_aware && !cp->dynamic_endpoint) {
+        log_warn("conf: pool '%.*s': zone_aware has no effect without "
+                 "dynamic_endpoint", cp->name.len, cp->name.data);
+    }
+
     if (cp->zone_weight == CONF_UNSET_NUM) {
         cp->zone_weight = CONF_DEFAULT_ZONE_WEIGHT;
     } else if (cp->zone_weight > 100) {
