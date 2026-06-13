@@ -83,9 +83,12 @@ USER twemproxy
 
 # Set entrypoint and default command (using dumb-init like working example)
 ENTRYPOINT ["dumb-init", "--rewrite", "15:2", "--", "/usr/local/bin/entrypoint.sh"]
+# Stats bind to 127.0.0.1 by default (see STATS_ADDR in src/nc_stats.h): the
+# in-container HEALTHCHECK hits localhost, so loopback is enough. To scrape
+# stats from outside the container, add "--stats-addr=0.0.0.0" here (and only
+# expose port 22222 to a trusted network).
 CMD ["/usr/local/sbin/nutcracker", \
      "--conf-file=/etc/twemproxy/nutcracker.yml", \
      "--output=/var/log/twemproxy/nutcracker.log", \
      "--stats-port=22222", \
-     "--stats-addr=0.0.0.0", \
      "--stats-interval=5000"]

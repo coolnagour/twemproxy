@@ -57,7 +57,7 @@
     ACTION( out_queue,              STATS_GAUGE,        "# requests in outgoing queue")                             \
     ACTION( out_queue_bytes,        STATS_GAUGE,        "current request bytes in outgoing queue")                  \
 
-#define STATS_ADDR      "0.0.0.0"
+#define STATS_ADDR      "127.0.0.1"  /* loopback by default: do not expose replica topology on all interfaces; opt in with -a/--stats-addr */
 #define STATS_PORT      22222
 #define STATS_INTERVAL  (10 * 1000) /* in msec */
 

@@ -2226,8 +2226,65 @@ server_should_resolve_dns(struct server *server)
             (now - dns->last_resolved) > dns->resolve_interval);
 }
 
-/* 
- * Get detailed read host information for stats/debugging 
+/*
+ * Escape a string for safe embedding inside a JSON double-quoted value.
+ * The resolved CNAMEs that go into the stats JSON come from DNS, so a hostile
+ * or malformed name containing a quote, backslash, or control byte could
+ * otherwise break the JSON document. Writes at most dstsz-1 bytes plus a NUL
+ * and always NUL-terminates. Bytes that do not fit are dropped (the name is
+ * truncated, not the JSON corrupted).
+ */
+static void
+server_json_escape(char *dst, size_t dstsz, const char *src)
+{
+    size_t di = 0;
+    if (dstsz == 0) {
+        return;
+    }
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    for (; *src != '\0'; src++) {
+        unsigned char c = (unsigned char)*src;
+        char esc[7];
+        const char *out;
+        size_t outlen;
+
+        switch (c) {
+        case '"':  out = "\\\""; outlen = 2; break;
+        case '\\': out = "\\\\"; outlen = 2; break;
+        case '\b': out = "\\b";  outlen = 2; break;
+        case '\f': out = "\\f";  outlen = 2; break;
+        case '\n': out = "\\n";  outlen = 2; break;
+        case '\r': out = "\\r";  outlen = 2; break;
+        case '\t': out = "\\t";  outlen = 2; break;
+        default:
+            if (c < 0x20) {
+                /* other control chars -> \u00XX */
+                nc_snprintf(esc, sizeof(esc), "\\u%04x", c);
+                out = esc;
+                outlen = 6;
+            } else {
+                esc[0] = (char)c;
+                esc[1] = '\0';
+                out = esc;
+                outlen = 1;
+            }
+            break;
+        }
+
+        if (di + outlen >= dstsz) {
+            break; /* no room for this token (and its NUL) -- stop */
+        }
+        memcpy(dst + di, out, outlen);
+        di += outlen;
+    }
+    dst[di] = '\0';
+}
+
+/*
+ * Get detailed read host information for stats/debugging
  */
 rstatus_t
 server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_size)
@@ -2343,10 +2400,20 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         if (dns->hostnames != NULL && i < dns->naddresses && dns->hostnames[i].data != NULL) {
             cname_str = (const char *)dns->hostnames[i].data;
         } else {
-            log_warn("hostname missing for addr %"PRIu32": hostnames=%p, i=%"PRIu32", naddresses=%"PRIu32, 
+            log_warn("hostname missing for addr %"PRIu32": hostnames=%p, i=%"PRIu32", naddresses=%"PRIu32,
                      i, dns->hostnames, i, dns->naddresses);
         }
-        
+
+        /*
+         * Escape the CNAME before it goes into the JSON. Not every code path
+         * that stores a hostname validates it (the add-new-address path does
+         * not), so a name with a quote or control byte must not be able to
+         * corrupt the stats document. A DNS name is at most 255 bytes and each
+         * byte expands to at most 6 (\u00XX), so 1536 is comfortably enough.
+         */
+        char cname_escaped[1536];
+        server_json_escape(cname_escaped, sizeof(cname_escaped), cname_str);
+
         addr_written = snprintf(buffer + written, buffer_size - written,
             "      {\n"
             "        \"index\": %"PRIu32",\n"
@@ -2363,8 +2430,8 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
             "        \"last_chosen_for_connection\": %"PRId64",\n"
             "        \"requests\": %"PRIu64"\n"
             "      }%s\n",
-            i, addr_str, cname_str, dns->latencies[i], dns->failure_counts[i],
-            zone_id, zone_type, zone_weight, 
+            i, addr_str, cname_escaped, dns->latencies[i], dns->failure_counts[i],
+            zone_id, zone_type, zone_weight,
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",
             last_seen_in_dns_lookup,

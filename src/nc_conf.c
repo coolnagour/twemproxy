@@ -812,7 +812,15 @@ conf_begin_parse(struct conf *cf)
             break;
         case YAML_SCALAR_EVENT:
             ASSERT(cf->depth < CONF_POOL_MAX_DEPTH);
-            size_t len = cf->event.data.scalar.length ? MAX_SECTION_NAME_N : cf->event.data.scalar.length;
+            /*
+             * Clamp the copy to the smaller of the scalar length and the
+             * section_name buffer (MAX_SECTION_NAME_N + 1). The old ternary was
+             * inverted -- it copied MAX_SECTION_NAME_N bytes for ANY non-empty
+             * name, over-reading the source scalar and leaving garbage for the
+             * strcmp() below.
+             */
+            size_t len = cf->event.data.scalar.length < MAX_SECTION_NAME_N ?
+                         cf->event.data.scalar.length : MAX_SECTION_NAME_N;
             strncpy(section_name, (const char *)cf->event.data.scalar.value, len);
             section_name[len] = 0;
             if (start_section) {

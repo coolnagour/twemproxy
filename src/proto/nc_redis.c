@@ -2911,6 +2911,34 @@ redis_post_coalesce(struct msg *r)
     }
 }
 
+/*
+ * Compare a client-supplied AUTH password against the configured secret
+ * without leaking, through timing, how many leading bytes matched. A plain
+ * memcmp() returns as soon as it hits the first differing byte, so an
+ * attacker can recover the password one byte at a time by measuring the
+ * response latency. Here we always fold every byte of the supplied password
+ * into an accumulator and never branch out early: the only timing signal is
+ * the length of the password the attacker themselves sent.
+ */
+static bool
+redis_auth_equal_consttime(const uint8_t *secret, uint32_t secretlen,
+                           const uint8_t *given, uint32_t givenlen)
+{
+    uint32_t i;
+    uint32_t diff = secretlen ^ givenlen; /* nonzero if the lengths differ */
+
+    for (i = 0; i < givenlen; i++) {
+        /*
+         * Index the secret safely. When givenlen > secretlen the out-of-range
+         * bytes read secret[0] instead, but the length mismatch is already
+         * recorded in diff, so a chance byte match cannot make diff zero.
+         */
+        diff |= (uint32_t)(secret[i < secretlen ? i : 0] ^ given[i]);
+    }
+
+    return diff == 0;
+}
+
 static rstatus_t
 redis_handle_auth_req(struct msg *req, struct msg *rsp)
 {
@@ -2936,8 +2964,8 @@ redis_handle_auth_req(struct msg *req, struct msg *rsp)
     kpos = array_get(req->keys, 0);
     key = kpos->start;
     keylen = (uint32_t)(kpos->end - kpos->start);
-    valid = (keylen == pool->redis_auth.len) &&
-            (memcmp(pool->redis_auth.data, key, keylen) == 0) ? true : false;
+    valid = redis_auth_equal_consttime(pool->redis_auth.data, pool->redis_auth.len,
+                                       key, keylen);
     if (valid) {
         conn->authenticated = 1;
         return msg_append(rsp, rsp_ok.data, rsp_ok.len);
