@@ -95,7 +95,7 @@ EXPOSE 6378 6379 22222
 
 # Labels
 LABEL maintainer="Twemproxy Enhanced" \
-      version="2.1.2" \
+      version="2.1.3" \
       description="Twemproxy with cloud zone detection and latency-based routing" \
       org.opencontainers.image.title="twemproxy-enhanced" \
       org.opencontainers.image.description="Redis proxy with intelligent zone-aware routing" \

@@ -11,7 +11,7 @@
 #   5. A BARE connect (open the socket, read a byte WITHOUT sending a request,
 #      the legacy /dev/tcp healthcheck) still gets bytes promptly -- this is the
 #      back-compat path the container healthcheck depends on.
-#   6. nutcracker --version reports 2.1.2 and nutcracker -t accepts the conf.
+#   6. nutcracker --version reports 2.1.3 and nutcracker -t accepts the conf.
 #
 # Why a container: it needs a Linux host with a working ASan runtime, curl, jq
 # and libyaml. macOS Docker is fine -- the image runs under emulation. Run it:
@@ -83,9 +83,9 @@ run_inner() {
     echo
     echo "== (B) nutcracker --version =="
     "$BIN" --version
-    "$BIN" --version 2>&1 | grep -q "2.1.2" \
-        || { echo "FAIL: version is not 2.1.2"; exit 1; }
-    echo "VERSION: 2.1.2 OK"
+    "$BIN" --version 2>&1 | grep -q "2.1.3" \
+        || { echo "FAIL: version is not 2.1.3"; exit 1; }
+    echo "VERSION: 2.1.3 OK"
 
     echo
     echo "== (C) nutcracker -t on a static test conf =="
