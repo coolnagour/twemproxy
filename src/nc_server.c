@@ -1224,8 +1224,8 @@ server_dns_init(struct server *server)
               server->pname.len, server->pname.data, dns->resolve_interval / 1000000);
     
     /* Perform initial DNS resolution */
-    log_debug(LOG_INFO, "performing initial DNS resolution for '%.*s'",
-              server->pname.len, server->pname.data);
+    log_info("performing initial DNS resolution for '%.*s'",
+             server->pname.len, server->pname.data);
     
     status = server_dns_resolve(server);
     if (status != NC_OK) {
@@ -1233,8 +1233,8 @@ server_dns_init(struct server *server)
                  server->pname.len, server->pname.data);
         /* Don't fail initialization - we'll retry on first connection */
     } else {
-        log_debug(LOG_INFO, "initial DNS resolution successful for '%.*s' - found %"PRIu32" addresses",
-                  server->pname.len, server->pname.data, dns->naddresses);
+        log_info("initial DNS resolution successful for '%.*s' - found %"PRIu32" addresses",
+                 server->pname.len, server->pname.data, dns->naddresses);
         
         /* Zone detection will happen later after we have real latency measurements */
     }
@@ -1393,8 +1393,8 @@ server_dns_resolve(struct server *server)
         return status;
     }
     
-    log_debug(LOG_INFO, "DNS resolved '%.*s' to %"PRIu32" new addresses",
-              dns->hostname.len, dns->hostname.data, new_naddresses);
+    log_info("DNS resolved '%.*s' to %"PRIu32" new addresses",
+             dns->hostname.len, dns->hostname.data, new_naddresses);
     
     /* If this is the first resolution, just use the new addresses */
     if (dns->addrs == NULL || dns->naddresses == 0) {
@@ -1451,8 +1451,8 @@ server_dns_resolve(struct server *server)
         }
 
         dns->last_resolved = now;
-        log_debug(LOG_INFO, "initialized with %"PRIu32" addresses for '%.*s'",
-                  dns->naddresses, dns->hostname.len, dns->hostname.data);
+        log_info("initialized with %"PRIu32" addresses for '%.*s'",
+                 dns->naddresses, dns->hostname.len, dns->hostname.data);
 
         /* Clean up temporary arrays (resolved list + parallel hostname list). */
         if (new_addresses) {
@@ -1579,13 +1579,13 @@ server_dns_resolve(struct server *server)
             } else {
                 strcpy(addr_str, "unknown");
             }
-            log_debug(LOG_INFO, "added new address %s for '%.*s' (total addresses: %"PRIu32")",
+            log_info("added new address %s for '%.*s' (total addresses: %"PRIu32")",
                      addr_str, dns->hostname.len, dns->hostname.data, dns->naddresses);
 
             /* Force immediate zone re-analysis for new servers */
             if (pool && pool->zone_aware) {
                 dns->last_zone_analysis = 0; /* Reset to force immediate re-analysis */
-                log_debug(LOG_INFO, "forcing zone re-analysis for new server %s", addr_str);
+                log_info("forcing zone re-analysis for new server %s", addr_str);
             }
         }
     }
@@ -1621,11 +1621,11 @@ server_dns_resolve(struct server *server)
             }
 
             if (i == server->current_addr_idx) {
-                log_debug(LOG_INFO, "expiring current address %s for '%.*s' (not seen in DNS for %"PRId64"s, exceeds 2x threshold)",
+                log_info("expiring current address %s for '%.*s' (not seen in DNS for %"PRId64"s, exceeds 2x threshold)",
                          addr_str, dns->hostname.len, dns->hostname.data,
                          time_since_seen / 1000000);
             } else {
-                log_debug(LOG_INFO, "expiring inactive address %s for '%.*s' (not seen in DNS for %"PRId64"s)",
+                log_info("expiring inactive address %s for '%.*s' (not seen in DNS for %"PRId64"s)",
                          addr_str, dns->hostname.len, dns->hostname.data,
                          time_since_seen / 1000000);
             }
@@ -1658,7 +1658,7 @@ server_dns_resolve(struct server *server)
     }
     
     if (removed_count > 0) {
-        log_debug(LOG_INFO, "expired %"PRIu32" addresses for '%.*s', %"PRIu32" addresses remaining",
+        log_info("expired %"PRIu32" addresses for '%.*s', %"PRIu32" addresses remaining",
                  removed_count, dns->hostname.len, dns->hostname.data, dns->naddresses);
     }
     
@@ -1676,8 +1676,8 @@ server_dns_resolve(struct server *server)
         stats_server_set(server->owner->ctx, server, dns_addresses, dns->naddresses);
     }
     
-    log_debug(LOG_INFO, "DNS resolution complete for '%.*s': %"PRIu32" total addresses",
-              dns->hostname.len, dns->hostname.data, dns->naddresses);
+    log_info("DNS resolution complete for '%.*s': %"PRIu32" total addresses",
+             dns->hostname.len, dns->hostname.data, dns->naddresses);
     
     return NC_OK;
 }
@@ -1813,8 +1813,8 @@ server_select_best_address(struct server *server)
     if (healthy_count == 1) {
         /* Only one healthy server, use it */
         nc_free(healthy_servers);
-        log_debug(LOG_INFO, "only one healthy server: address %"PRIu32" for '%.*s' (latency: %"PRIu32"us)",
-                  best_idx, server->pname.len, server->pname.data, dns->addrs[best_idx].latency);
+        log_info("only one healthy server: address %"PRIu32" for '%.*s' (latency: %"PRIu32"us)",
+                 best_idx, server->pname.len, server->pname.data, dns->addrs[best_idx].latency);
         return best_idx;
     }
     
@@ -1866,7 +1866,7 @@ server_select_best_address(struct server *server)
                         cname_str = (const char *)dns->addrs[idx].hostname.data;
                     }
 
-                    log_debug(LOG_INFO, "prioritizing untested CNAME '%s' (addr %"PRIu32") for '%.*s' (latency=%"PRIu32"us, discovered %"PRId64"s ago)",
+                    log_info("prioritizing untested CNAME '%s' (addr %"PRIu32") for '%.*s' (latency=%"PRIu32"us, discovered %"PRId64"s ago)",
                              cname_str, idx, server->pname.len, server->pname.data,
                              dns->addrs[idx].latency, time_since_seen / 1000000);
                     break;
@@ -1911,7 +1911,7 @@ server_select_best_address(struct server *server)
                             cname_str = (const char *)dns->addrs[idx].hostname.data;
                         }
 
-                        log_debug(LOG_INFO, "probing CNAME '%s' (addr %"PRIu32") for '%.*s' (latency not checked for %"PRId64"s)",
+                        log_info("probing CNAME '%s' (addr %"PRIu32") for '%.*s' (latency not checked for %"PRId64"s)",
                                  cname_str, idx, server->pname.len, server->pname.data,
                                  time_since_latency_check / 1000000);
                         break;
@@ -1941,8 +1941,8 @@ server_select_best_address(struct server *server)
         if (rand_val >= 95 && healthy_count > 1) {
             uint32_t random_probe = healthy_servers[random() % healthy_count];
             if (random_probe != server->current_addr_idx) {
-                log_debug(LOG_INFO, "random latency probe: selecting addr %"PRIu32" for '%.*s' (current latency: %"PRIu32"us)",
-                          random_probe, server->pname.len, server->pname.data, dns->addrs[random_probe].latency);
+                log_info("random latency probe: selecting addr %"PRIu32" for '%.*s' (current latency: %"PRIu32"us)",
+                         random_probe, server->pname.len, server->pname.data, dns->addrs[random_probe].latency);
 
                 stats_server_set(pool->ctx, server, current_latency_us, dns->addrs[random_probe].latency);
                 nc_free(healthy_servers);
@@ -1962,9 +1962,9 @@ server_select_best_address(struct server *server)
             nc_free(same_zone_servers);
             nc_free(other_zone_servers);
 
-            log_debug(LOG_INFO, "-> selected SAME-ZONE address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" < %"PRIu32"%%)",
-                      selected_idx, server->pname.len, server->pname.data,
-                      dns->addrs[selected_idx].latency, dns->addrs[selected_idx].zone_id, rand_val, pool->zone_weight);
+            log_info("-> selected SAME-ZONE address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" < %"PRIu32"%%)",
+                     selected_idx, server->pname.len, server->pname.data,
+                     dns->addrs[selected_idx].latency, dns->addrs[selected_idx].zone_id, rand_val, pool->zone_weight);
             return selected_idx;
         }
 
@@ -1983,9 +1983,9 @@ server_select_best_address(struct server *server)
             nc_free(same_zone_servers);
             nc_free(other_zone_servers);
 
-            log_debug(LOG_INFO, "-> selected DISTRIBUTED address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" >= %"PRIu32"%%)",
-                      selected_idx, server->pname.len, server->pname.data,
-                      dns->addrs[selected_idx].latency, dns->addrs[selected_idx].zone_id, rand_val, pool->zone_weight);
+            log_info("-> selected DISTRIBUTED address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" >= %"PRIu32"%%)",
+                     selected_idx, server->pname.len, server->pname.data,
+                     dns->addrs[selected_idx].latency, dns->addrs[selected_idx].zone_id, rand_val, pool->zone_weight);
             return selected_idx;
         }
         
@@ -1997,8 +1997,8 @@ server_select_best_address(struct server *server)
             selected_idx = best_idx;
             stats_server_set(pool->ctx, server, current_latency_us, dns->addrs[best_idx].latency);
 
-            log_debug(LOG_INFO, "-> selected LOWEST-LATENCY address %"PRIu32" for '%.*s' (latency: %"PRIu32"us)",
-                      best_idx, server->pname.len, server->pname.data, dns->addrs[best_idx].latency);
+            log_info("-> selected LOWEST-LATENCY address %"PRIu32" for '%.*s' (latency: %"PRIu32"us)",
+                     best_idx, server->pname.len, server->pname.data, dns->addrs[best_idx].latency);
         }
     }
     
@@ -2040,7 +2040,7 @@ server_update_dynamic_connections(struct server *server)
         uint32_t old_connections = pool->current_server_connections;
         pool->current_server_connections = optimal_connections;
         
-        log_debug(LOG_INFO, "dynamic server_connections updated for '%.*s': %"PRIu32" -> %"PRIu32" (dns_addresses: %"PRIu32")",
+        log_info("dynamic server_connections updated for '%.*s': %"PRIu32" -> %"PRIu32" (dns_addresses: %"PRIu32")",
                  server->pname.len, server->pname.data,
                  old_connections, optimal_connections, dns->naddresses);
     }
@@ -2480,8 +2480,8 @@ server_detect_zones_by_latency(struct server *server)
         }
     }
     
-    log_debug(LOG_INFO, "auto-detected %"PRIu32" zones for server '%.*s' (low-latency threshold: %"PRIu32"us, range: %"PRIu32"us)", 
-              dns->next_zone_id - 1, server->pname.len, server->pname.data, low_latency_threshold, latency_range);
+    log_info("auto-detected %"PRIu32" zones for server '%.*s' (low-latency threshold: %"PRIu32"us, range: %"PRIu32"us)",
+             dns->next_zone_id - 1, server->pname.len, server->pname.data, low_latency_threshold, latency_range);
     
     return NC_OK;
 }
@@ -2659,8 +2659,8 @@ server_is_healthy(struct server *server, uint32_t addr_idx)
                      (time_since_seen < stale_threshold);
 
     if (time_since_seen >= stale_threshold) {
-        log_debug(LOG_INFO, "marking addr %"PRIu32" as unhealthy: not seen in DNS for %"PRId64" seconds",
-                  addr_idx, time_since_seen / 1000000);
+        log_info("marking addr %"PRIu32" as unhealthy: not seen in DNS for %"PRId64" seconds",
+                 addr_idx, time_since_seen / 1000000);
     }
 
     log_debug(LOG_VVERB, "health status addr %"PRIu32": %s (score=%"PRIu32", failures=%"PRIu32", last_seen=%"PRId64"s ago)",

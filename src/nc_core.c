@@ -436,7 +436,7 @@ core_dns_maintenance(struct context *ctx)
                             cname_str = (const char *)server->dns->addrs[conn->addr_idx].hostname.data;
                         }
                         
-                        log_debug(LOG_INFO, "connection lifetime expired: closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
+                        log_info("connection lifetime expired: closing connection to CNAME '%s' (addr %"PRIu32") for '%.*s' after %"PRId64"s (max: %"PRId64"s) - will force re-selection",
                                  cname_str, conn->addr_idx, server->pname.len, server->pname.data,
                                  (now - conn->connect_start_ts) / 1000000,
                                  pool->connection_max_lifetime / 1000000);
@@ -452,7 +452,7 @@ core_dns_maintenance(struct context *ctx)
             }
             
             if (expired_count > 0) {
-                log_debug(LOG_INFO, "lifetime check: closed %"PRIu32" expired connections in pool '%.*s' - new connections will trigger server re-selection",
+                log_info("lifetime check: closed %"PRIu32" expired connections in pool '%.*s' - new connections will trigger server re-selection",
                          expired_count, pool->name.len, pool->name.data);
             }
         }
@@ -469,13 +469,13 @@ core_dns_maintenance(struct context *ctx)
                         /* Show discovered CNAMEs in the log */
                         struct server_dns *dns = server->dns;
                         if (dns != NULL && dns->naddresses > 0) {
-                            log_debug(LOG_INFO, "periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
-                                      server->pname.len, server->pname.data, dns->naddresses);
+                            log_info("periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
+                                     server->pname.len, server->pname.data, dns->naddresses);
                             uint32_t k;
                             for (k = 0; k < dns->naddresses; k++) {
                                 char addr_str[INET6_ADDRSTRLEN];
                                 const char *cname_str = "unknown";
-                                
+
                                 /* Convert IP to string */
                                 if (dns->addrs[k].addr.family == AF_INET) {
                                     struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addrs[k].addr.addr;
@@ -491,12 +491,19 @@ core_dns_maintenance(struct context *ctx)
                                 if (k < dns->naddresses && dns->addrs[k].hostname.data != NULL) {
                                     cname_str = (const char *)dns->addrs[k].hostname.data;
                                 }
-                                
+
+                                /* Per-address dump stays VERBOSE (one line per address,
+                                 * subordinate to the info summary above). It is the only
+                                 * reader of addr_str/cname_str; in a release build
+                                 * log_debug compiles away, so discard them to stay
+                                 * warning-free without losing the debug-build line. */
                                 log_debug(LOG_VERB, "   -> addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);
+                                (void)addr_str;
+                                (void)cname_str;
                             }
                         } else {
-                            log_debug(LOG_INFO, "periodic DNS update successful for '%.*s' (no addresses found)",
-                                      server->pname.len, server->pname.data);
+                            log_info("periodic DNS update successful for '%.*s' (no addresses found)",
+                                     server->pname.len, server->pname.data);
                         }
                     } else {
                         log_warn("periodic DNS update failed for '%.*s'",

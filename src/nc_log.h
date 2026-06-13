@@ -110,6 +110,22 @@ struct logger {
     }                                                                       \
 } while (0)
 
+/*
+ * log_info - informational lines that ARE compiled into a release build (unlike
+ * log_debug, which is #defined away unless --enable-debug). Gated at LOG_INFO,
+ * one level ABOVE the default LOG_NOTICE, so they stay silent at the default
+ * verbosity and only appear once the operator raises the level (e.g. -v 6+).
+ * Use this for the genuinely useful operational lines -- zone/replica selection
+ * decisions, DNS address-set changes -- that must be visible in production on a
+ * raised -v without rebuilding with debug. Keep chatty per-iteration trace on
+ * log_debug(LOG_VERB/LOG_VVERB).
+ */
+#define log_info(...) do {                                                  \
+    if (log_loggable(LOG_INFO) != 0) {                                      \
+        _log(LOG_INFO, __FILE__, __LINE__, 0, __VA_ARGS__);                 \
+    }                                                                       \
+} while (0)
+
 #define log_panic(...) do {                                                 \
     if (log_loggable(LOG_EMERG) != 0) {                                     \
         _log(LOG_EMERG, __FILE__, __LINE__, 1, __VA_ARGS__);                \
