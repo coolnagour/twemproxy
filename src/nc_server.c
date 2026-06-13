@@ -1225,6 +1225,97 @@ server_dns_deinit(struct server *server)
               server->pname.len, server->pname.data);
 }
 
+/*
+ * Remove the address at index i from a server_dns, shifting EVERY per-address
+ * parallel array down by one so array[k] keeps describing addresses[k] for all
+ * surviving k. The vacated tail slot is zeroed.
+ *
+ * All the parallel arrays in struct server_dns are indexed by the same address
+ * index, so they must move together. The earlier bug shifted only six of them
+ * (addresses/latencies/last_latency_check/failure_counts/last_seen/hostnames),
+ * leaving last_connected, request_counts, zone_ids, health_scores and
+ * last_health_check pointing at the wrong address. This helper is the single
+ * place that owns the shift.
+ *
+ * zone_ids, health_scores and last_health_check are allocated lazily (NULL
+ * until zone/health analysis first runs) and are sized to max_addresses, so
+ * they are guarded with NULL checks.
+ *
+ * Reuse invariant: the tail-clear at index naddresses-1 assumes every shifted
+ * array is allocated to at least naddresses entries. The eagerly-grown arrays
+ * are sized to naddresses; the lazy arrays satisfy this via max_addresses=16.
+ * Future changes that alter the naddresses<->max_addresses relationship (fix #3
+ * cap-on-accumulate, fix #4 realloc-safety) MUST preserve it.
+ *
+ * The caller is responsible for any server->current_addr_idx fixup, since this
+ * function only sees the dns struct.
+ */
+void
+server_dns_remove_address_at(struct server_dns *dns, uint32_t i)
+{
+    uint32_t j, last;
+
+    ASSERT(dns != NULL);
+    ASSERT(i < dns->naddresses);
+
+    /*
+     * Free the hostname string being removed before it is overwritten by the
+     * shift, otherwise its backing buffer leaks.
+     */
+    if (dns->hostnames[i].data != NULL) {
+        string_deinit(&dns->hostnames[i]);
+    }
+
+    for (j = i; j + 1 < dns->naddresses; j++) {
+        memcpy(&dns->addresses[j], &dns->addresses[j + 1], sizeof(struct sockinfo));
+        dns->latencies[j]          = dns->latencies[j + 1];
+        dns->last_latency_check[j] = dns->last_latency_check[j + 1];
+        dns->failure_counts[j]     = dns->failure_counts[j + 1];
+        dns->last_seen[j]          = dns->last_seen[j + 1];
+        dns->last_connected[j]     = dns->last_connected[j + 1];
+        dns->request_counts[j]     = dns->request_counts[j + 1];
+        dns->hostnames[j]          = dns->hostnames[j + 1]; /* move struct string */
+
+        if (dns->zone_ids != NULL) {
+            dns->zone_ids[j] = dns->zone_ids[j + 1];
+        }
+        if (dns->health_scores != NULL) {
+            dns->health_scores[j] = dns->health_scores[j + 1];
+        }
+        if (dns->last_health_check != NULL) {
+            dns->last_health_check[j] = dns->last_health_check[j + 1];
+        }
+    }
+
+    /*
+     * Clear the now-unused tail slot. hostnames[last] still holds a copy of the
+     * struct string that was moved down to hostnames[last-1]; re-initialise it
+     * so its data pointer is not aliased (and so a later resolve or
+     * server_dns_deinit cannot double-free it). Zero the other tail slots too
+     * so stale values never leak into a regrown array.
+     */
+    last = dns->naddresses - 1;
+    memset(&dns->addresses[last], 0, sizeof(struct sockinfo));
+    dns->latencies[last]          = 0;
+    dns->last_latency_check[last] = 0;
+    dns->failure_counts[last]     = 0;
+    dns->last_seen[last]          = 0;
+    dns->last_connected[last]     = 0;
+    dns->request_counts[last]     = 0;
+    string_init(&dns->hostnames[last]);
+    if (dns->zone_ids != NULL) {
+        dns->zone_ids[last] = 0;
+    }
+    if (dns->health_scores != NULL) {
+        dns->health_scores[last] = 0;
+    }
+    if (dns->last_health_check != NULL) {
+        dns->last_health_check[last] = 0;
+    }
+
+    dns->naddresses--;
+}
+
 rstatus_t
 server_dns_resolve(struct server *server)
 {
@@ -1537,22 +1628,27 @@ server_dns_resolve(struct server *server)
                          time_since_seen / 1000000);
             }
             
-            /* Clean up hostname for removed address */
-            if (dns->hostnames[i].data != NULL) {
-                string_deinit(&dns->hostnames[i]);
-            }
-            
-            /* Remove this address by shifting everything down */
-            for (j = i; j < dns->naddresses - 1; j++) {
-                memcpy(&dns->addresses[j], &dns->addresses[j + 1], sizeof(struct sockinfo));
-                dns->latencies[j] = dns->latencies[j + 1];
-                dns->last_latency_check[j] = dns->last_latency_check[j + 1];
-                dns->failure_counts[j] = dns->failure_counts[j + 1];
-                dns->last_seen[j] = dns->last_seen[j + 1];
-                dns->hostnames[j] = dns->hostnames[j + 1]; /* Move string structure */
-            }
-            dns->naddresses--;
+            /* Remove this address, shifting every parallel array down. */
+            server_dns_remove_address_at(dns, i);
             removed_count++;
+
+            /*
+             * Keep server->current_addr_idx pointing at the same logical
+             * address. Removing an address at index i < current_addr_idx
+             * shifts the selected address down one, so the index must follow.
+             * If the selected address itself was removed (i == current), the
+             * selection re-runs on next use; just keep the index in range.
+             *
+             * This rule is mirrored by apply_current_idx_fixup() in
+             * tests/unit/test_remove_address.c -- keep the two in sync.
+             */
+            if (i < server->current_addr_idx) {
+                server->current_addr_idx--;
+            } else if (i == server->current_addr_idx &&
+                       server->current_addr_idx >= dns->naddresses) {
+                server->current_addr_idx = (dns->naddresses > 0) ?
+                                           dns->naddresses - 1 : 0;
+            }
             /* Don't increment i since we shifted everything down */
         } else {
             i++;

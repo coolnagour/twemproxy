@@ -201,6 +201,7 @@ rstatus_t server_dns_init(struct server *server);
 void server_dns_deinit(struct server *server);
 rstatus_t server_dns_resolve(struct server *server);
 rstatus_t server_dns_check_update(struct server *server);
+void server_dns_remove_address_at(struct server_dns *dns, uint32_t i);
 uint32_t server_select_best_address(struct server *server);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 bool server_should_resolve_dns(struct server *server);
