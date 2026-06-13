@@ -1604,7 +1604,7 @@ stats_show_read_hosts(struct array *server_pool)
             server = array_get(&sp->server, j);
             
             if (server->is_dynamic && server->dns != NULL) {
-                status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+                status = server_get_read_hosts_info(server, "read_hosts", buffer, sizeof(buffer));
                 if (status == NC_OK) {
                     log_stderr("    server '%.*s':", server->pname.len, server->pname.data);
                     log_stderr("      type: dynamic DNS");
@@ -1630,27 +1630,64 @@ stats_show_read_hosts(struct array *server_pool)
     }
 }
 
+/*
+ * Append a literal byte run to the stats buffer with a hard bound. The document
+ * keeps a 1-byte tail (room = size - len - 1) so callers can never write the
+ * final byte; if the run does not fit we report truncation (NC_ERROR) rather
+ * than writing a short, silently-corrupt value.
+ */
+static rstatus_t
+stats_buf_append(struct stats *st, const char *src, size_t srclen)
+{
+    struct stats_buffer *buf = &st->buf;
+    size_t room;
+
+    /* Keep a 1-byte tail (room = size - len - 1). Guard the subtraction so a
+     * already-full buffer cannot underflow to a huge unsigned room. */
+    if (buf->len + 1 > buf->size) {
+        return NC_ERROR;
+    }
+    room = buf->size - buf->len - 1;
+
+    if (srclen > room) {
+        return NC_ERROR;
+    }
+    memcpy(buf->data + buf->len, src, srclen);
+    buf->len += srclen;
+    return NC_OK;
+}
+
+/* The placeholder emitted when a server has no resolvable DNS host info. */
+static rstatus_t
+stats_add_dns_hosts_null(struct stats *st)
+{
+    static const char null_kv[] = "\"dns_hosts\": null, ";
+    return stats_buf_append(st, null_kv, sizeof(null_kv) - 1);
+}
+
 static rstatus_t
 stats_add_dns_hosts(struct stats *st, struct string *server_name)
 {
     rstatus_t status;
     struct server *server;
     uint32_t i, j, npool, nserver;
-    char buffer[32768];  /* 32KB buffer to handle many DNS addresses */
-    
+    char buffer[32768];  /* 32KB scratch for the (pretty-printed) DNS fragment */
+    const char *frag;
+    size_t frag_len;
+
     /* Find the server object by name */
     server = NULL;
     npool = array_n(&st->owner->pool);
-    
+
     for (i = 0; i < npool && server == NULL; i++) {
         struct server_pool *pool = array_get(&st->owner->pool, i);
         nserver = array_n(&pool->server);
-        
+
         for (j = 0; j < nserver; j++) {
             struct server *s = array_get(&pool->server, j);
-            
+
             /* Check if server_name matches the beginning of s->pname (ignoring weight suffix) */
-            if (server_name->len <= s->pname.len && 
+            if (server_name->len <= s->pname.len &&
                 memcmp(server_name->data, s->pname.data, server_name->len) == 0 &&
                 (server_name->len == s->pname.len || s->pname.data[server_name->len] == ':')) {
                 server = s;
@@ -1658,71 +1695,43 @@ stats_add_dns_hosts(struct stats *st, struct string *server_name)
             }
         }
     }
-    
+
     /* If server not found, not dynamic, or never resolved, emit a null object */
     if (server == NULL || !server->is_dynamic || server->dns == NULL) {
-        struct stats_buffer *buf = &st->buf;
-        uint8_t *pos = buf->data + buf->len;
-        size_t room = buf->size - buf->len - 1;
-        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
-        if (n < 0 || n >= (int)room) {
-            return NC_ERROR;
-        }
-        buf->len += (size_t)n;
-        return NC_OK;
+        return stats_add_dns_hosts_null(st);
     }
-    
-    /* Get DNS host information */
-    status = server_get_read_hosts_info(server, buffer, sizeof(buffer));
+
+    /*
+     * Build the fragment with its final JSON key ("dns_hosts") directly -- no
+     * post-hoc string rewrite of a "read_hosts" key at a magic byte offset. The
+     * helper writes a pretty-printed object "  \"dns_hosts\": { ... }" into the
+     * scratch buffer and guarantees NUL-termination within sizeof(buffer); on
+     * overflow it returns NC_ERROR (no silent truncation).
+     */
+    status = server_get_read_hosts_info(server, "dns_hosts", buffer, sizeof(buffer));
     if (status != NC_OK) {
-        struct stats_buffer *buf = &st->buf;
-        uint8_t *pos = buf->data + buf->len;
-        size_t room = buf->size - buf->len - 1;
-        int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
-        if (n < 0 || n >= (int)room) {
-            return NC_ERROR;
-        }
-        buf->len += (size_t)n;
-        return NC_OK;
+        return stats_add_dns_hosts_null(st);
     }
-    
-    
-    /* Add the DNS hosts information to stats */
-    {
-        struct stats_buffer *buf = &st->buf;
-        uint8_t *pos = buf->data + buf->len;
-        size_t room = buf->size - buf->len - 1;
-        /* Replace "read_hosts" with "dns_hosts" in the buffer */
-        
-        char* read_hosts_pos = strstr(buffer, "\"read_hosts\":");
-        if (read_hosts_pos != NULL) {
-            /* Copy everything after "read_hosts": */
-            char* content_start = read_hosts_pos + 13; /* Length of '"read_hosts":' */
-            
-            /* Safely measure content length with bounds checking */
-            size_t max_content_len = room > 20 ? room - 20 : 0; /* Leave 20 bytes for format overhead */
-            size_t content_len = strnlen(content_start, max_content_len);
-            
-            /* Validate content fits in buffer */
-            if (content_len >= max_content_len) {
-                log_warn("DNS content too large for stats buffer: %zu bytes", content_len);
-                return NC_ERROR;
-            }
-            
-            int n = nc_snprintf(pos, room, "\"dns_hosts\":%s, ", content_start);
-            if (n < 0 || n >= (int)room) {
-                log_warn("MAIN STATS BUFFER OVERFLOW! Needed %d bytes, only had %zu available", n, room);
-                return NC_ERROR;
-            }
-            buf->len += (size_t)n;
-        } else {
-            int n = nc_snprintf(pos, room, "\"dns_hosts\": null, ");
-            if (n < 0 || n >= (int)room) {
-                return NC_ERROR;
-            }
-            buf->len += (size_t)n;
-        }
+
+    /*
+     * Splice the fragment in as "<key>": <value>. The fragment begins with the
+     * indent the pretty-printer added ("  \"dns_hosts\": ..."); skip that
+     * leading ASCII whitespace so the document reads "\"dns_hosts\": {...".
+     * Everything from the key onward is copied verbatim under a hard length
+     * bound, then the document's "key: value, " separator is appended. A
+     * fragment too large for the remaining room is reported as truncation, not
+     * written short.
+     */
+    frag = buffer;
+    while (*frag == ' ' || *frag == '\t' || *frag == '\n' || *frag == '\r') {
+        frag++;
     }
-    
-    return NC_OK;
+    frag_len = strlen(frag);
+
+    status = stats_buf_append(st, frag, frag_len);
+    if (status != NC_OK) {
+        log_warn("stats buffer too small for dns_hosts fragment (%zu bytes)", frag_len);
+        return status;
+    }
+    return stats_buf_append(st, ", ", 2);
 }

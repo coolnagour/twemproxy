@@ -2174,32 +2174,37 @@ server_json_escape(char *dst, size_t dstsz, const char *src)
 }
 
 /*
- * Get detailed read host information for stats/debugging
+ * Get detailed read host information for stats/debugging.
+ *
+ * `key` is the JSON object key this fragment is emitted under (e.g. "dns_hosts"
+ * for the per-server stats document, or "read_hosts" for the --describe dump).
+ * The caller passes the final key directly so the stats path no longer has to
+ * string-rewrite a hardcoded key at a magic byte offset after the fact.
  */
 rstatus_t
-server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_size)
+server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size)
 {
     struct server_dns *dns;
     struct server_pool *pool;
     size_t written = 0;
     uint32_t i;
-    
-    if (server == NULL || buffer == NULL || buffer_size == 0) {
+
+    if (server == NULL || key == NULL || buffer == NULL || buffer_size == 0) {
         return NC_ERROR;
     }
-    
+
     dns = server->dns;
     pool = server->owner;
-    
+
     if (!server->is_dynamic || dns == NULL) {
-        written = snprintf(buffer, buffer_size, 
-            "  \"read_hosts\": {\n"
+        int rc = snprintf(buffer, buffer_size,
+            "  \"%s\": {\n"
             "    \"type\": \"static\",\n"
             "    \"hostname\": \"%.*s\",\n"
             "    \"addresses\": 1\n"
-            "  }", 
-            server->addrstr.len, server->addrstr.data);
-        return (written < buffer_size) ? NC_OK : NC_ERROR;
+            "  }",
+            key, server->addrstr.len, server->addrstr.data);
+        return (rc > 0 && (size_t)rc < buffer_size) ? NC_OK : NC_ERROR;
     }
     
     /* Dynamic DNS server */
@@ -2218,7 +2223,7 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
     }
     
     written = snprintf(buffer, buffer_size,
-        "  \"read_hosts\": {\n"
+        "  \"%s\": {\n"
         "    \"type\": \"dynamic\",\n"
         "    \"hostname\": \"%.*s\",\n"
         "    \"dns_resolve_interval\": %"PRId64",\n"
@@ -2234,6 +2239,7 @@ server_get_read_hosts_info(struct server *server, char *buffer, size_t buffer_si
         "    \"max_server_connections\": %"PRIu32",\n"
         "    \"dynamic_server_connections\": %s,\n"
         "    \"address_details\": [\n",
+        key,
         dns->hostname.len, dns->hostname.data,
         dns->resolve_interval / 1000000, /* convert to seconds */
         dns->last_resolved,
