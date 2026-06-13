@@ -135,14 +135,27 @@ signal_handler(int signo)
              * process run loop (nc_single_process_cycle) never consumes
              * pm_reload, so arming nc_reload_config would be a SILENT no-op.
              * Say so plainly instead of pretending the reload happened.
+             *
+             * Guard the master_nci->ctx->cf chain: a SIGHUP can arrive in the
+             * sub-second startup window BEFORE master_nci / its ctx / its cf are
+             * wired up (master_nci starts NULL; ctx and cf are filled in during
+             * core_start). Dereferencing any of them then is a NULL crash. Treat
+             * not-yet-initialised as "not in single-process mode": do nothing --
+             * a startup-window SIGHUP becomes a harmless no-op, not a crash, and
+             * we do not arm a reload against a half-built process. The real
+             * multi-process reload path below is unaffected (by the time workers
+             * exist the chain is fully populated).
              */
-            if (master_nci->ctx->cf->global.worker_processes < 1) {
-                log_safe("SIGHUP: config reload is not supported in "
-                         "single-process mode (worker_processes < 1); "
-                         "restart twemproxy to apply config changes");
-            } else {
-                actionstr = ", reload config";
-                action = nc_reload_config;
+            if (master_nci != NULL && master_nci->ctx != NULL &&
+                master_nci->ctx->cf != NULL) {
+                if (master_nci->ctx->cf->global.worker_processes < 1) {
+                    log_safe("SIGHUP: config reload is not supported in "
+                             "single-process mode (worker_processes < 1); "
+                             "restart twemproxy to apply config changes");
+                } else {
+                    actionstr = ", reload config";
+                    action = nc_reload_config;
+                }
             }
         }
         break;
