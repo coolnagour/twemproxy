@@ -204,6 +204,19 @@ bin_realloc="$(build_test test_realloc_safety "$here/test_realloc_safety.c")"
 bin_realloc_buggy="$(build_test test_realloc_safety_buggy "$here/test_realloc_safety.c" \
                   -DTEST_REALLOC_BUGGY)"
 
+# --- fix #1: connection-max-lifetime quiescence guard ----------------------
+# Two builds from one source:
+#   fixed : drives the REAL core_conn_lifetime_should_recycle() from nc_core.c
+#           (which calls the REAL server_active()) -> an expired-but-BUSY conn
+#           is NOT recycled, an expired-and-quiescent conn IS -> exit 0.
+#   prefix: -DTEST_PREFIX_NO_QUIESCENCE_GUARD swaps in a faithful mirror of the
+#           PRE-fix decision (expiry only, no quiescence check) -> the
+#           expired-BUSY conn is (wrongly) recycled, so the "kept" assertion
+#           fails -> non-zero exit. This is the TDD red.
+bin_lifetime="$(build_test test_lifetime_quiescent "$here/test_lifetime_quiescent.c")"
+bin_lifetime_prefix="$(build_test test_lifetime_quiescent_prefix \
+                  "$here/test_lifetime_quiescent.c" -DTEST_PREFIX_NO_QUIESCENCE_GUARD)"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (fix #2 alignment)"     || fail=1
@@ -211,6 +224,8 @@ run_test    "$bin_cap"    0 "test_address_cap (fix #3 cap, fixed build)" || fail
 run_nonzero "$bin_nocap"    "test_address_cap (fix #3, NO-CAP bug reproduction)" || fail=1
 run_test    "$bin_realloc" 0 "test_realloc_safety (fix #4 all-or-nothing, fixed build)" || fail=1
 run_nonzero "$bin_realloc_buggy" "test_realloc_safety (fix #4, BUGGY-writeback UAF/leak reproduction)" || fail=1
+run_test    "$bin_lifetime" 0 "test_lifetime_quiescent (fix #1 quiescence guard, fixed build)" || fail=1
+run_nonzero "$bin_lifetime_prefix" "test_lifetime_quiescent (fix #1, NO-GUARD bug reproduction)" || fail=1
 
 # Heap-guard demonstration: only meaningful (and only safe) under a guard.
 if [ "${LIBGMALLOC:-0}" = "1" ] && [ -f /usr/lib/libgmalloc.dylib ]; then

@@ -171,4 +171,15 @@ rstatus_t core_core(void *evb, void *arg, uint32_t events);
 rstatus_t core_loop(struct context *ctx);
 void core_ctx_destroy(struct context *ctx);
 
+/*
+ * Decide whether a server connection should be recycled by the
+ * connection_max_lifetime sweep. True only when the connection is BOTH past
+ * its max lifetime AND quiescent (no in-flight requests, per server_active()),
+ * so an expired-but-busy connection is left for a later sweep tick rather than
+ * having its in-flight requests dropped. Exposed (non-static) so it can be
+ * unit-tested directly.
+ */
+bool core_conn_lifetime_should_recycle(struct conn *conn,
+                                       struct server_pool *pool, int64_t now);
+
 #endif

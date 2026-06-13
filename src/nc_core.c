@@ -344,6 +344,43 @@ core_error(struct context *ctx, struct conn *conn)
     core_close(ctx, conn);
 }
 
+bool
+core_conn_lifetime_should_recycle(struct conn *conn, struct server_pool *pool,
+                                  int64_t now)
+{
+    /* Not stamped, or not yet past max lifetime: keep it. */
+    if (conn->connect_start_ts <= 0 ||
+        (now - conn->connect_start_ts) <= pool->connection_max_lifetime) {
+        return false;
+    }
+
+    /*
+     * Expired -- but only recycle if quiescent. server_active() is true while
+     * the connection has queued/in-progress requests (imsg_q / omsg_q /
+     * rmsg / smsg). Force-closing a busy connection here drops every in-flight
+     * request on it at once (acute on a single-process sidecar with
+     * server_connections:1). A still-busy expired connection is left for the
+     * next sweep tick, which retires it once its queues drain. The only
+     * connection that escapes recycling forever is one that NEVER goes
+     * quiescent -- i.e. a genuinely wedged conn that request-timeouts /
+     * server_failure would already be tearing down; a backend actually serving
+     * traffic empties its queues between request/reply pairs and gets caught on
+     * a later 5s sweep tick.
+     *
+     * The direct server_active() call (rather than the conn->active() vtable
+     * used in nc_request.c / nc_response.c) is safe and intentional here:
+     * s_conn_q holds only server conns (server_ref asserts !client && !proxy
+     * before inserting), so conn->active == server_active on this queue -- the
+     * direct call just avoids the indirection. Do NOT reuse this predicate on a
+     * non-server queue without restoring the vtable dispatch.
+     */
+    if (server_active(conn)) {
+        return false;
+    }
+
+    return true;
+}
+
 static void
 core_dns_maintenance(struct context *ctx)
 {
@@ -381,10 +418,14 @@ core_dns_maintenance(struct context *ctx)
                 for (conn = TAILQ_FIRST(&server->s_conn_q); conn != NULL; conn = nconn) {
                     nconn = TAILQ_NEXT(conn, conn_tqe);
                     
-                    /* Check if connection has exceeded max lifetime */
-                    if (conn->connect_start_ts > 0 && 
-                        (now - conn->connect_start_ts) > pool->connection_max_lifetime) {
-                        
+                    /*
+                     * Recycle only if the connection has exceeded its max
+                     * lifetime AND is quiescent. A still-busy expired
+                     * connection is left for a later sweep tick so its
+                     * in-flight requests are not dropped.
+                     */
+                    if (core_conn_lifetime_should_recycle(conn, pool, now)) {
+
                         /* Get the CNAME for the specific address this connection is using */
                         const char *cname_str = "unknown";
                         if (server->is_dynamic && server->dns != NULL && 
