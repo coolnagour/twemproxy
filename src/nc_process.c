@@ -351,6 +351,7 @@ rstatus_t
 nc_single_process_cycle(struct instance *nci)
 {
     rstatus_t status;
+    struct conf *cf = nci->ctx->cf;
 
     status = core_init_stats(nci);
     if (status != NC_OK) {
@@ -360,6 +361,36 @@ nc_single_process_cycle(struct instance *nci)
     status = core_init_listener(nci);
     if (status != NC_OK) {
         return status;
+    }
+
+    /*
+     * Drop privileges in the single-process (worker_processes:0) model too.
+     *
+     * The multi-process path drops in nc_worker_process(); single-process never
+     * went through that, so a root-started proxy kept serving as root. Mirror the
+     * worker drop exactly (setgid -> initgroups -> setuid, same error handling).
+     * We drop HERE -- after core_init_listener() has bound the stats + proxy
+     * sockets -- so a privileged listen port (<1024) still binds as root before
+     * we shed privilege. uid/gid come from the parsed conf (user/group, default
+     * "nobody"); when not started as root this is a no-op, just like the worker.
+     */
+    if (geteuid() == 0) {
+        if (setgid(cf->global.gid) == -1) {
+            log_error("failed to setgid");
+            exit(0);
+        }
+
+        if (initgroups((char *)cf->global.user.data, (int)cf->global.gid) == -1) {
+            log_error("failed to initgroups");
+        }
+
+        if (setuid(cf->global.uid) == -1) {
+            log_error("failed to setuid");
+            exit(0);
+        }
+
+        log_warn("dropped privileges to user '%s' (uid %d gid %d)",
+                 cf->global.user.data, (int)cf->global.uid, (int)cf->global.gid);
     }
 
     status = core_init_instance(nci);
