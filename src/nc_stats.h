@@ -231,8 +231,48 @@ typedef enum stats_server_field {
 
 #define stats_enabled   NC_STATS
 
+/*
+ * How a stats-port connection should be served. The stats server peeks at the
+ * first bytes a client sends and classifies the connection:
+ *
+ *   STATS_REQ_RAW             a BARE connect -- no bytes, or leading bytes that
+ *                             are not a known HTTP method. This is the legacy
+ *                             path (the /dev/tcp healthcheck opens the socket
+ *                             and reads without writing). It gets the raw JSON
+ *                             document dumped on connect, exactly as before.
+ *   STATS_REQ_HTTP_STATS      GET / or GET /stats -> JSON over HTTP/1.1.
+ *   STATS_REQ_HTTP_STATS_HEAD HEAD / or HEAD /stats -> the same headers, no body.
+ *   STATS_REQ_HTTP_HEALTH     GET /health -> 200 text/plain "ok".
+ *   STATS_REQ_HTTP_NOTFOUND   a known method on an unknown path -> 404. (A
+ *                             future /metrics endpoint slots in here.)
+ *   STATS_REQ_HTTP_BADREQUEST a known method with a malformed request line
+ *                             -> 400. Once we have seen an HTTP method we owe
+ *                             the client an HTTP response, never a bare dump.
+ */
+typedef enum stats_request_kind {
+    STATS_REQ_RAW,
+    STATS_REQ_HTTP_STATS,
+    STATS_REQ_HTTP_STATS_HEAD,
+    STATS_REQ_HTTP_HEALTH,
+    STATS_REQ_HTTP_NOTFOUND,
+    STATS_REQ_HTTP_BADREQUEST
+} stats_request_kind_t;
+
 void stats_describe(void);
 void stats_show_read_hosts(struct array *server_pool);
+
+/*
+ * Pure helpers for the HTTP-aware stats endpoint, exposed for unit testing.
+ * stats_request_classify() inspects the first `len` bytes a client sent (the
+ * peeked request line) and decides how to serve the connection.
+ * stats_http_format_header() writes an HTTP/1.1 response header block (status
+ * line + Content-Type + Content-Length + Connection: close + blank line) into
+ * dst; it returns the byte length written, or -1 if dst is too small.
+ */
+stats_request_kind_t stats_request_classify(const uint8_t *buf, size_t len);
+int stats_http_format_header(char *dst, size_t dstsz, int status,
+                             const char *reason, const char *content_type,
+                             size_t content_length);
 
 void _stats_pool_incr(struct context *ctx, struct server_pool *pool, stats_pool_field_t fidx);
 void _stats_pool_decr(struct context *ctx, struct server_pool *pool, stats_pool_field_t fidx);

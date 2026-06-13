@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -62,6 +63,345 @@ static struct stats_desc stats_server_desc[] = {
 #undef DEFINE_ACTION
 
 static rstatus_t stats_add_dns_hosts(struct stats *st, struct string *server_name);
+
+/*
+ * ---------------------------------------------------------------------------
+ * HTTP-aware stats endpoint
+ *
+ * The stats port speaks two dialects on the same socket:
+ *   - A proper HTTP/1.1 request (GET/HEAD ...) gets a framed HTTP response.
+ *   - A BARE connect -- a client that opens the socket and reads without
+ *     sending a request line -- gets the raw JSON document dumped on connect,
+ *     exactly as the original twemproxy did. The container healthcheck relies
+ *     on this: it opens a TCP socket and reads a byte without writing anything.
+ *
+ * The classification + header formatting are pure functions so they can be unit
+ * tested without a socket (tests/unit/test_stats_http.c). The socket plumbing
+ * that calls them lives in stats_serve_conn() below.
+ * ---------------------------------------------------------------------------
+ */
+
+/*
+ * Does `buf` (the first `len` peeked bytes) begin with the HTTP method token
+ * `tok` (e.g. "GET") at a word boundary -- the literal token followed by a
+ * non-alphabetic byte (space/CR/LF/tab) or end of buffer? Returns the token
+ * length on a match, or 0 otherwise.
+ *
+ * The boundary check is what keeps "GETX..." or random bytes from looking like
+ * GET, while still recognising a degenerate "GET\r\n" (no target) as an HTTP
+ * GET so the caller can return 400 rather than dumping raw JSON. If `len` is
+ * shorter than the token we cannot yet tell -- report no match (0) and let the
+ * caller treat it as a bare connect.
+ */
+static size_t
+stats_http_method_len(const uint8_t *buf, size_t len, const char *tok)
+{
+    size_t toklen = strlen(tok);
+    uint8_t next;
+
+    if (len < toklen) {
+        return 0;
+    }
+    if (memcmp(buf, tok, toklen) != 0) {
+        return 0;
+    }
+    if (len == toklen) {
+        return toklen; /* token runs exactly to the end of the peeked bytes */
+    }
+    /* Require a non-alphabetic boundary so "GET" does not match "GETXY". */
+    next = buf[toklen];
+    if ((next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z')) {
+        return 0;
+    }
+    return toklen;
+}
+
+/*
+ * Match the request target (path) at `p` (length `len`) against `want`
+ * (e.g. "/stats"). A match is the exact path, or the path followed by a path
+ * terminator: a space (end of target before the HTTP-version token), '?' (query
+ * string), or end of buffer. This keeps "/stats" from matching "/statsx" while
+ * still accepting "/stats?foo" and a bare "/stats".
+ */
+static bool
+stats_http_path_is(const uint8_t *p, size_t len, const char *want)
+{
+    size_t wlen = strlen(want);
+
+    if (len < wlen) {
+        return false;
+    }
+    if (memcmp(p, want, wlen) != 0) {
+        return false;
+    }
+    if (len == wlen) {
+        return true; /* exact, path runs to end of the (already line-bounded) span */
+    }
+    {
+        uint8_t c = p[wlen];
+        return c == ' ' || c == '?' || c == '\t';
+    }
+}
+
+stats_request_kind_t
+stats_request_classify(const uint8_t *buf, size_t len)
+{
+    size_t mlen;
+    bool is_head = false;
+    const uint8_t *path;
+    size_t path_len;
+    size_t i;
+
+    if (buf == NULL || len == 0) {
+        return STATS_REQ_RAW; /* bare connect: legacy raw-JSON dump */
+    }
+
+    /* Identify the method token. Only GET and HEAD are recognised. Anything
+     * else (including a partial token we cannot yet resolve) is a bare
+     * connect. */
+    mlen = stats_http_method_len(buf, len, "GET");
+    if (mlen == 0) {
+        mlen = stats_http_method_len(buf, len, "HEAD");
+        if (mlen == 0) {
+            return STATS_REQ_RAW;
+        }
+        is_head = true;
+    }
+
+    /* We have committed to HTTP. From here on, a malformed line is a 400 -- we
+     * owe the client an HTTP response, never a bare JSON dump.
+     *
+     * Skip exactly the single space that separates the method from the target
+     * (request-line grammar is METHOD SP target SP version). A missing space
+     * (e.g. "GET\r\n") is malformed. */
+    if (mlen >= len || buf[mlen] != ' ') {
+        return STATS_REQ_HTTP_BADREQUEST;
+    }
+    mlen += 1; /* consume the single SP */
+
+    path = buf + mlen;
+    path_len = len - mlen;
+
+    /* A well-formed target begins with '/'. No path, or a target that does not
+     * start with '/', is malformed -> 400. */
+    if (path_len == 0 || path[0] != '/') {
+        return STATS_REQ_HTTP_BADREQUEST;
+    }
+
+    /* Bound the path scan to the request-line: stop at the first space (before
+     * the HTTP-version token) or CR/LF. We only need to compare known literals,
+     * and stats_http_path_is() handles the terminator, so this length cap is
+     * just to keep us inside the line. */
+    for (i = 0; i < path_len; i++) {
+        if (path[i] == ' ' || path[i] == '\r' || path[i] == '\n') {
+            break;
+        }
+    }
+    path_len = i;
+
+    if (stats_http_path_is(path, path_len, "/") ||
+        stats_http_path_is(path, path_len, "/stats")) {
+        return is_head ? STATS_REQ_HTTP_STATS_HEAD : STATS_REQ_HTTP_STATS;
+    }
+
+    if (!is_head && stats_http_path_is(path, path_len, "/health")) {
+        return STATS_REQ_HTTP_HEALTH;
+    }
+
+    /* Known method, recognised-as-HTTP, but an unknown path -> 404. */
+    return STATS_REQ_HTTP_NOTFOUND;
+}
+
+int
+stats_http_format_header(char *dst, size_t dstsz, int status,
+                         const char *reason, const char *content_type,
+                         size_t content_length)
+{
+    int n;
+
+    n = nc_snprintf(dst, dstsz,
+                    "HTTP/1.1 %d %s\r\n"
+                    "Content-Type: %s\r\n"
+                    "Content-Length: %zu\r\n"
+                    "Connection: close\r\n"
+                    "\r\n",
+                    status, reason, content_type, content_length);
+    if (n < 0 || (size_t)n >= dstsz) {
+        return -1;
+    }
+    return n;
+}
+
+/*
+ * How long, at most, to wait for a client to send a request line before we
+ * decide it is a BARE connect and dump the raw JSON. A real HTTP client (curl)
+ * sends its request immediately after connect, so a short grace catches it; a
+ * bare-connect client (the /dev/tcp healthcheck) never sends, so it waits this
+ * long and then gets the raw body. Kept well under a second so the healthcheck
+ * still gets its first byte promptly (its own timeout is seconds).
+ */
+#define STATS_HTTP_PEEK_MS 150
+
+/* Largest request line we bother to peek at. We only need the method + path +
+ * version; anything longer is still classified from this prefix. */
+#define STATS_HTTP_PEEK_BUF 1024
+
+/*
+ * Send a framed HTTP/1.1 response: header block (status + content-type +
+ * content-length + connection-close) followed by `body` (omitted for HEAD).
+ */
+static rstatus_t
+stats_http_send(int sd, int status, const char *reason, const char *ctype,
+                const uint8_t *body, size_t body_len, bool head_only)
+{
+    char header[256];
+    int hlen;
+    ssize_t n;
+
+    hlen = stats_http_format_header(header, sizeof(header), status, reason,
+                                    ctype, body_len);
+    if (hlen < 0) {
+        log_error("stats http header format failed (status %d)", status);
+        return NC_ERROR;
+    }
+
+    n = nc_sendn(sd, header, (size_t)hlen);
+    if (n < 0) {
+        log_error("send stats http header on sd %d failed: %s", sd,
+                  strerror(errno));
+        return NC_ERROR;
+    }
+
+    if (head_only || body_len == 0) {
+        return NC_OK;
+    }
+
+    n = nc_sendn(sd, body, body_len);
+    if (n < 0) {
+        log_error("send stats http body on sd %d failed: %s", sd,
+                  strerror(errno));
+        return NC_ERROR;
+    }
+    return NC_OK;
+}
+
+/*
+ * Serve one accepted stats connection on `sd`, then close it. `body` is the
+ * already-built JSON document (length `body_len`).
+ *
+ * Back-compat is the whole point of the peek dance: the legacy path is a client
+ * that opens the socket and READS without sending anything (the container's
+ * /dev/tcp byte-read healthcheck, and `nc -z` which just connects). Such a
+ * client must still get bytes promptly. So:
+ *
+ *   1. Make the socket non-blocking and poll() up to STATS_HTTP_PEEK_MS for any
+ *      inbound data. (Non-blocking + a bounded poll is what guarantees a bare
+ *      connect never makes us hang waiting for a request that will never come.)
+ *   2. If nothing arrives, or what arrives is not a recognised HTTP method,
+ *      classify RAW and dump the JSON body exactly as the original code did.
+ *   3. If an HTTP request line is present, drain the peeked bytes and reply with
+ *      a proper framed HTTP response (200 JSON for / and /stats, 200 text "ok"
+ *      for /health, 404 for an unknown path, 400 for a malformed line).
+ *
+ * We only ever PEEK to classify; the request bytes are then drained best-effort
+ * before we respond. We do not parse headers or bodies -- the stats endpoint is
+ * request-line addressed only.
+ */
+static void
+stats_serve_conn(int sd, const uint8_t *body, size_t body_len)
+{
+    uint8_t peek[STATS_HTTP_PEEK_BUF];
+    ssize_t pn = 0;
+    stats_request_kind_t kind;
+    struct pollfd pfd;
+
+    /* Non-blocking so neither the poll fallback nor the peek can ever block on
+     * a client that connected but will not send. */
+    if (nc_set_nonblocking(sd) < 0) {
+        log_warn("stats: set nonblocking on sd %d failed: %s -- serving raw",
+                 sd, strerror(errno));
+        /* Fall back to the legacy behaviour: just dump the raw body. */
+        (void)nc_sendn(sd, body, body_len);
+        close(sd);
+        return;
+    }
+
+    pfd.fd = sd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    /* Wait briefly for a request line. EINTR just retries within the budget;
+     * we do not loop on the clock because a single short wait is enough to tell
+     * an HTTP client (sends immediately) from a bare connect (never sends). */
+    if (poll(&pfd, 1, STATS_HTTP_PEEK_MS) > 0 && (pfd.revents & POLLIN)) {
+        do {
+            pn = recv(sd, peek, sizeof(peek), MSG_PEEK);
+        } while (pn < 0 && errno == EINTR);
+        if (pn < 0) {
+            pn = 0; /* treat a peek error as "no request" -> raw */
+        }
+    }
+
+    kind = stats_request_classify(peek, (size_t)pn);
+
+    /*
+     * Classification is done; the send helpers (nc_sendn) assume a BLOCKING
+     * descriptor -- they loop on EINTR but not EAGAIN, so a large body on a slow
+     * client would otherwise short-write on a non-blocking socket. Restore
+     * blocking mode (the original accepted-socket behaviour) before any send. If
+     * that fails we still try to send; a small body usually fits the send buffer
+     * in one shot regardless.
+     */
+    (void)nc_set_blocking(sd);
+
+    if (kind == STATS_REQ_RAW) {
+        /* Legacy path: emit the raw JSON document, no HTTP framing. */
+        (void)nc_sendn(sd, body, body_len);
+        close(sd);
+        return;
+    }
+
+    /*
+     * HTTP path. Drain the request bytes we peeked at (best effort -- we do not
+     * need them, but draining avoids an RST on close while data is unread). The
+     * socket is blocking again now, so cap the drain to a single read of the
+     * peeked length: we only need to clear what we saw, not loop on the client.
+     */
+    if (pn > 0) {
+        uint8_t drain[STATS_HTTP_PEEK_BUF];
+        ssize_t dn;
+        do {
+            dn = recv(sd, drain, (size_t)pn, 0);
+        } while (dn < 0 && errno == EINTR);
+        (void)dn;
+    }
+
+    switch (kind) {
+    case STATS_REQ_HTTP_STATS:
+        (void)stats_http_send(sd, 200, "OK", "application/json",
+                              body, body_len, false);
+        break;
+    case STATS_REQ_HTTP_STATS_HEAD:
+        (void)stats_http_send(sd, 200, "OK", "application/json",
+                              body, body_len, true);
+        break;
+    case STATS_REQ_HTTP_HEALTH:
+        (void)stats_http_send(sd, 200, "OK", "text/plain",
+                              (const uint8_t *)"ok\n", 3, false);
+        break;
+    case STATS_REQ_HTTP_NOTFOUND:
+        (void)stats_http_send(sd, 404, "Not Found", "text/plain",
+                              (const uint8_t *)"not found\n", 10, false);
+        break;
+    case STATS_REQ_HTTP_BADREQUEST:
+    default:
+        (void)stats_http_send(sd, 400, "Bad Request", "text/plain",
+                              (const uint8_t *)"bad request\n", 12, false);
+        break;
+    }
+
+    close(sd);
+}
 
 void
 stats_describe(void)
@@ -944,7 +1284,6 @@ static rstatus_t
 stats_send_rsp(struct stats *st)
 {
     rstatus_t status;
-    ssize_t n;
     int sd;
 
     status = stats_make_rsp(st);
@@ -958,16 +1297,12 @@ stats_send_rsp(struct stats *st)
         return NC_ERROR;
     }
 
-    log_debug(LOG_VERB, "send stats on sd %d %d bytes", sd, st->buf.len);
+    log_debug(LOG_VERB, "serve stats on sd %d (%zu json bytes)", sd,
+              st->buf.len);
 
-    n = nc_sendn(sd, st->buf.data, st->buf.len);
-    if (n < 0) {
-        log_error("send stats on sd %d failed: %s", sd, strerror(errno));
-        close(sd);
-        return NC_ERROR;
-    }
-
-    close(sd);
+    /* Classify the connection (HTTP request vs bare connect) and respond
+     * accordingly. stats_serve_conn() closes sd. */
+    stats_serve_conn(sd, st->buf.data, st->buf.len);
 
     return NC_OK;
 }
@@ -1016,7 +1351,6 @@ static rstatus_t
 stats_master_send_resp(struct stats *st)
 {
     rstatus_t status;
-    ssize_t n;
     int sd;
     struct stats_buffer buf;
     buf.len=0;
@@ -1038,29 +1372,26 @@ stats_master_send_resp(struct stats *st)
     buf.len = 1;
     status = array_each(&master_nci->workers, stats_each_shared_mem_aggregate, &buf);
     if (status) {
+        free(buf.data);
         return NC_ERROR;
     }
     buf.data[buf.len-1] = ']';
     buf.data[buf.len] = 0;
 
     sd = accept(st->sd, NULL, NULL);
-        if (sd < 0) {
-            log_error("accept on m %d failed: %s", st->sd, strerror(errno));
-            free(buf.data);
-            return NC_ERROR;
-        }
-
-    log_debug(LOG_VERB, "send stats on sd %d %d bytes", sd, buf.len);
-
-    n = nc_sendn(sd, buf.data, buf.len);
-    if (n < 0) {
-        log_error("send stats on sd %d failed: %s", sd, strerror(errno));
-        close(sd);
+    if (sd < 0) {
+        log_error("accept on m %d failed: %s", st->sd, strerror(errno));
         free(buf.data);
         return NC_ERROR;
     }
 
-    close(sd);
+    log_debug(LOG_VERB, "serve stats on sd %d (%zu json bytes)", sd, buf.len);
+
+    /* Same classify-then-respond path as the worker. The aggregated document is
+     * the per-worker array; HTTP clients get it framed, bare connects get it
+     * raw. stats_serve_conn() closes sd. */
+    stats_serve_conn(sd, buf.data, buf.len);
+
     free(buf.data);
     return NC_OK;
 };
