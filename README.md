@@ -157,8 +157,6 @@ redis-cli -p 6379 ping  # write pool
 | `DNS_RESOLVE_INTERVAL` | `30` | DNS re-resolution interval (seconds) |
 | `DNS_EXPIRATION_MINUTES` | `5` | Minutes to keep an address after it stops appearing in DNS |
 | `DNS_HEALTH_CHECK_INTERVAL` | `30` | Health check interval (seconds) |
-| `CONNECTION_POOLING` | `true` | Enable connection pooling (`true`/`false`) |
-| `CONNECTION_WARMING` | `1` | Number of connections to pre-warm |
 | `SERVER_CONNECTIONS` | `1` | Connections per server |
 | `CONNECTION_MAX_LIFETIME` | `30` | Recycle a connection after N seconds once it goes idle (triggers re-selection) |
 | `DYNAMIC_SERVER_CONNECTIONS` | `false` | Scale connections with the number of DNS addresses |
@@ -221,20 +219,17 @@ services:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `connection_pooling` | boolean | `false` | Enable connection pooling |
-| `connection_warming` | integer | `0` | Number of connections to pre-warm |
-| `connection_idle_timeout` | integer | `300` | Close idle connections after N seconds |
+| `connection_max_lifetime` | integer | `900` | Force-close (and re-open) a server connection once it is older than N seconds, but only while it is idle. Caps how long a single TCP connection lingers, so DNS changes and replica swaps eventually take effect. |
 
 ### Health and monitoring
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `dns_failure_threshold` | integer | `3` | Failures before marking a server unhealthy |
-| `dns_cache_negative_ttl` | integer | `30` | Negative DNS cache TTL (seconds) |
 
 ### Security and encryption
 
-`tls_enabled` and `tls_verify_peer` are accepted by the config parser but are NOT implemented in this fork. There is no TLS to the Redis backend; traffic is plaintext regardless of these settings.
+There is no TLS to the Redis backend; traffic is plaintext. The parser does not accept any `tls_*` directives — `tls_enabled` / `tls_verify_peer` are rejected as unknown directives (fail-safe, so a config that expects TLS will not start silently thinking it has encryption).
 
 ---
 

@@ -184,23 +184,15 @@ struct server_pool {
     /* Cloud-agnostic configuration */
     unsigned           zone_aware:1;         /* enable zone-aware routing? */
     uint32_t           zone_weight;          /* extra weight for same-zone servers (0-100) */
-    unsigned           connection_pooling:1; /* enable connection pooling? */
-    uint32_t           connection_warming;   /* pre-warm connections count */
-    int64_t            connection_idle_timeout; /* close idle connections (usec) */
     int64_t            connection_max_lifetime; /* force close connections after max lifetime (usec) */
-    
+
     /* Dynamic connection scaling */
     unsigned           dynamic_server_connections:1; /* enable dynamic server_connections scaling? */
     uint32_t           max_server_connections;       /* maximum server_connections limit */
     uint32_t           current_server_connections;   /* current effective server_connections */
-    
-    /* TLS/Security */
-    unsigned           tls_enabled:1;        /* enable TLS? */
-    unsigned           tls_verify_peer:1;    /* verify TLS peer certificates? */
-    
+
     /* Enhanced DNS settings */
     uint32_t           dns_failure_threshold; /* failures before marking server unhealthy */
-    int64_t            dns_cache_negative_ttl; /* negative DNS cache TTL (usec) */
     int64_t            dns_expiration_minutes; /* expire addresses after N minutes (usec) */
     int64_t            dns_health_check_interval; /* health check interval (usec) */
 };

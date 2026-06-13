@@ -28,11 +28,6 @@ pools:
         zone_weight: 70             # 70% same-AZ, 30% distributed
         dns_resolve_interval: 15    # More frequent DNS checks
 
-        # Enhanced connection management
-        connection_pooling: true
-        connection_warming: 2
-        connection_idle_timeout: 300
-
         servers:
             - redis-cluster-ro.example.com:6379:1
 
@@ -53,9 +48,6 @@ pools:
         dynamic_endpoint: true
         zone_weight: 90             # 90% same-AZ for session locality
         dns_resolve_interval: 60
-
-        connection_pooling: true
-        connection_warming: 1
 
         servers:
             - sessions-redis-ro.example.com:6379:1

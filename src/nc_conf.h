@@ -68,14 +68,8 @@
 #define CONF_DEFAULT_ZONE_AWARE              false
 #define CONF_DEFAULT_DYNAMIC_ENDPOINT        false
 #define CONF_DEFAULT_ZONE_WEIGHT             25         /* extra weight for same-zone servers */
-#define CONF_DEFAULT_CONNECTION_POOLING      false
-#define CONF_DEFAULT_CONNECTION_WARMING      0
-#define CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT 300        /* in seconds */
 #define CONF_DEFAULT_CONNECTION_MAX_LIFETIME 900        /* in seconds (15 minutes) */
-#define CONF_DEFAULT_TLS_ENABLED             false
-#define CONF_DEFAULT_TLS_VERIFY_PEER         true
 #define CONF_DEFAULT_DNS_FAILURE_THRESHOLD   3
-#define CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL  30         /* in seconds */
 #define CONF_DEFAULT_DNS_EXPIRATION_MINUTES  5          /* expire addresses after 5 minutes */
 #define CONF_DEFAULT_DNS_HEALTH_CHECK_INTERVAL 30       /* health check interval in seconds */
 #define CONF_DEFAULT_DYNAMIC_SERVER_CONNECTIONS false    /* disabled by default */
@@ -126,14 +120,8 @@ struct conf_pool {
     int                zone_aware;            /* zone_aware: enable zone-aware routing */
     int                dynamic_endpoint;      /* dynamic_endpoint: opt in to dynamic DNS accumulation + zone routing for this pool's servers */
     int                zone_weight;           /* zone_weight: extra weight for same-zone servers */
-    int                connection_pooling;    /* connection_pooling: enable connection pooling */
-    int                connection_warming;    /* connection_warming: pre-warm connections count */
-    int                connection_idle_timeout; /* connection_idle_timeout: idle timeout in seconds */
     int                connection_max_lifetime; /* connection_max_lifetime: max lifetime in seconds */
-    int                tls_enabled;           /* tls_enabled: enable TLS */
-    int                tls_verify_peer;       /* tls_verify_peer: verify TLS peer certificates */
     int                dns_failure_threshold; /* dns_failure_threshold: failures before unhealthy */
-    int                dns_cache_negative_ttl; /* dns_cache_negative_ttl: negative DNS cache TTL */
     int                dns_expiration_minutes; /* dns_expiration_minutes: expire addresses after N minutes */
     int                dns_health_check_interval; /* dns_health_check_interval: health check interval in seconds */
     int                dynamic_server_connections; /* dynamic_server_connections: enable dynamic scaling */

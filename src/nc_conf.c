@@ -136,39 +136,13 @@ static struct command conf_pool_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, zone_weight) },
 
-
-
-    { string("connection_pooling"),
-      conf_set_bool,
-      offsetof(struct conf_pool, connection_pooling) },
-
-    { string("connection_warming"),
-      conf_set_num,
-      offsetof(struct conf_pool, connection_warming) },
-
-    { string("connection_idle_timeout"),
-      conf_set_num,
-      offsetof(struct conf_pool, connection_idle_timeout) },
-
     { string("connection_max_lifetime"),
       conf_set_num,
       offsetof(struct conf_pool, connection_max_lifetime) },
 
-    { string("tls_enabled"),
-      conf_set_bool,
-      offsetof(struct conf_pool, tls_enabled) },
-
-    { string("tls_verify_peer"),
-      conf_set_bool,
-      offsetof(struct conf_pool, tls_verify_peer) },
-
     { string("dns_failure_threshold"),
       conf_set_num,
       offsetof(struct conf_pool, dns_failure_threshold) },
-
-    { string("dns_cache_negative_ttl"),
-      conf_set_num,
-      offsetof(struct conf_pool, dns_cache_negative_ttl) },
 
     { string("dns_expiration_minutes"),
       conf_set_num,
@@ -355,14 +329,8 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->zone_aware = CONF_UNSET_NUM;
     cp->dynamic_endpoint = CONF_UNSET_NUM;
     cp->zone_weight = CONF_UNSET_NUM;
-    cp->connection_pooling = CONF_UNSET_NUM;
-    cp->connection_warming = CONF_UNSET_NUM;
-    cp->connection_idle_timeout = CONF_UNSET_NUM;
     cp->connection_max_lifetime = CONF_UNSET_NUM;
-    cp->tls_enabled = CONF_UNSET_NUM;
-    cp->tls_verify_peer = CONF_UNSET_NUM;
     cp->dns_failure_threshold = CONF_UNSET_NUM;
-    cp->dns_cache_negative_ttl = CONF_UNSET_NUM;
     cp->dns_expiration_minutes = CONF_UNSET_NUM;
     cp->dns_health_check_interval = CONF_UNSET_NUM;
     cp->dynamic_server_connections = CONF_UNSET_NUM;
@@ -520,14 +488,8 @@ conf_pool_each_transform(void *elem, void *data)
     /* Cloud-agnostic configuration */
     sp->zone_aware = cp->zone_aware ? 1 : 0;
     sp->zone_weight = (uint32_t)cp->zone_weight;
-    sp->connection_pooling = cp->connection_pooling ? 1 : 0;
-    sp->connection_warming = (uint32_t)cp->connection_warming;
-    sp->connection_idle_timeout = (int64_t)cp->connection_idle_timeout * 1000000LL; /* convert to microseconds */
     sp->connection_max_lifetime = (int64_t)cp->connection_max_lifetime * 1000000LL; /* convert to microseconds */
-    sp->tls_enabled = cp->tls_enabled ? 1 : 0;
-    sp->tls_verify_peer = cp->tls_verify_peer ? 1 : 0;
     sp->dns_failure_threshold = (uint32_t)cp->dns_failure_threshold;
-    sp->dns_cache_negative_ttl = (int64_t)cp->dns_cache_negative_ttl * 1000000LL; /* convert to microseconds */
     sp->dns_expiration_minutes = (int64_t)cp->dns_expiration_minutes * 60000000LL; /* convert to microseconds */
     sp->dns_health_check_interval = (int64_t)cp->dns_health_check_interval * 1000000LL; /* convert to microseconds */
     sp->dynamic_server_connections = cp->dynamic_server_connections ? 1 : 0;
@@ -1720,38 +1682,12 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
         return NC_ERROR;
     }
 
-
-
-    if (cp->connection_pooling == CONF_UNSET_NUM) {
-        cp->connection_pooling = CONF_DEFAULT_CONNECTION_POOLING;
-    }
-
-    if (cp->connection_warming == CONF_UNSET_NUM) {
-        cp->connection_warming = CONF_DEFAULT_CONNECTION_WARMING;
-    }
-
-    if (cp->connection_idle_timeout == CONF_UNSET_NUM) {
-        cp->connection_idle_timeout = CONF_DEFAULT_CONNECTION_IDLE_TIMEOUT;
-    }
-
     if (cp->connection_max_lifetime == CONF_UNSET_NUM) {
         cp->connection_max_lifetime = CONF_DEFAULT_CONNECTION_MAX_LIFETIME;
     }
 
-    if (cp->tls_enabled == CONF_UNSET_NUM) {
-        cp->tls_enabled = CONF_DEFAULT_TLS_ENABLED;
-    }
-
-    if (cp->tls_verify_peer == CONF_UNSET_NUM) {
-        cp->tls_verify_peer = CONF_DEFAULT_TLS_VERIFY_PEER;
-    }
-
     if (cp->dns_failure_threshold == CONF_UNSET_NUM) {
         cp->dns_failure_threshold = CONF_DEFAULT_DNS_FAILURE_THRESHOLD;
-    }
-
-    if (cp->dns_cache_negative_ttl == CONF_UNSET_NUM) {
-        cp->dns_cache_negative_ttl = CONF_DEFAULT_DNS_CACHE_NEGATIVE_TTL;
     }
 
     if (cp->dns_expiration_minutes == CONF_UNSET_NUM) {

@@ -8,8 +8,6 @@ ZONE_WEIGHT=${ZONE_WEIGHT:-"95"}
 DNS_RESOLVE_INTERVAL=${DNS_RESOLVE_INTERVAL:-"30"}
 DNS_EXPIRATION_MINUTES=${DNS_EXPIRATION_MINUTES:-"5"}
 DNS_HEALTH_CHECK_INTERVAL=${DNS_HEALTH_CHECK_INTERVAL:-"30"}
-CONNECTION_POOLING=${CONNECTION_POOLING:-"true"}
-CONNECTION_WARMING=${CONNECTION_WARMING:-"1"}
 SERVER_CONNECTIONS=${SERVER_CONNECTIONS:-"1"}
 DYNAMIC_SERVER_CONNECTIONS=${DYNAMIC_SERVER_CONNECTIONS:-"false"}
 MAX_SERVER_CONNECTIONS=${MAX_SERVER_CONNECTIONS:-"10"}
@@ -21,7 +19,6 @@ echo "Writing to /etc/twemproxy/nutcracker.yml"
 echo "Environment variables:"
 echo "  ZONE_WEIGHT: $ZONE_WEIGHT"
 echo "  SERVER_CONNECTIONS: $SERVER_CONNECTIONS"
-echo "  CONNECTION_POOLING: $CONNECTION_POOLING"
 echo "  DYNAMIC_SERVER_CONNECTIONS: $DYNAMIC_SERVER_CONNECTIONS"
 echo "  MAX_SERVER_CONNECTIONS: $MAX_SERVER_CONNECTIONS"
 echo "  CONNECTION_MAX_LIFETIME: $CONNECTION_MAX_LIFETIME"
@@ -73,11 +70,9 @@ pools:
         dns_expiration_minutes: ${DNS_EXPIRATION_MINUTES}
         dns_health_check_interval: ${DNS_HEALTH_CHECK_INTERVAL}
 
-        # Connection pooling for efficiency
-        connection_pooling: ${CONNECTION_POOLING}
-        connection_warming: ${CONNECTION_WARMING}
+        # Force-recycle idle server connections past this age (seconds)
         connection_max_lifetime: ${CONNECTION_MAX_LIFETIME}
-        
+
         # Dynamic server connections
         dynamic_server_connections: ${DYNAMIC_SERVER_CONNECTIONS}
         max_server_connections: ${MAX_SERVER_CONNECTIONS}

@@ -45,10 +45,6 @@ pools:
         dns_expiration_minutes: 2   # Expire addresses after 2 minutes of not appearing in DNS.
         dns_health_check_interval: 10 # Health check interval in seconds
 
-        # Connection pooling for efficiency
-        connection_pooling: true
-        connection_warming: 1
-
         # ElastiCache read replica endpoint
         servers:
             - staging-dispatch-api-ro.qfjk8t.ng.0001.euw1.cache.amazonaws.com:6379:1
