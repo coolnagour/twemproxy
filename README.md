@@ -160,7 +160,7 @@ redis-cli -p 6379 ping  # write pool
 | `CONNECTION_POOLING` | `true` | Enable connection pooling (`true`/`false`) |
 | `CONNECTION_WARMING` | `1` | Number of connections to pre-warm |
 | `SERVER_CONNECTIONS` | `1` | Connections per server |
-| `CONNECTION_MAX_LIFETIME` | `900` | Recycle a connection after N seconds once it goes idle (triggers re-selection) |
+| `CONNECTION_MAX_LIFETIME` | `30` | Recycle a connection after N seconds once it goes idle (triggers re-selection) |
 | `DYNAMIC_SERVER_CONNECTIONS` | `false` | Scale connections with the number of DNS addresses |
 | `MAX_SERVER_CONNECTIONS` | `10` | Upper limit for dynamic connection scaling |
 
@@ -234,10 +234,7 @@ services:
 
 ### Security and encryption
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `tls_enabled` | boolean | `false` | Enable TLS |
-| `tls_verify_peer` | boolean | `true` | Verify TLS peer certificates |
+`tls_enabled` and `tls_verify_peer` are accepted by the config parser but are NOT implemented in this fork. There is no TLS to the Redis backend; traffic is plaintext regardless of these settings.
 
 ---
 
@@ -270,7 +267,7 @@ zone_weight: 40    # 40% same-AZ, 60% spread
 
 1. Discovery. The proxy resolves the DNS name to find all the server IPs.
 2. Latency. It measures the actual connection latency to each one.
-3. Grouping. It splits them by latency: anything at or below (min + 25% of the range) is treated as same zone, the rest as cross zone.
+3. Grouping. It splits them by latency. The same-zone cutoff is the larger of two values: the minimum latency plus 10% of that minimum, or the minimum plus one sixth of the latency range (range = max minus min). A replica at or below that cutoff is same zone, the rest are cross zone. Taking the larger of the two keeps the groups meaningful when all the latencies are very close.
 4. Routing. It sends the configured percentage of reads to the same-zone group.
 5. Re-check. It re-runs the zone analysis every 2 minutes.
 
@@ -368,12 +365,7 @@ Turn up the log level to watch the zone routing:
 nutcracker -c nutcracker.yml -v 6 -o /var/log/nutcracker.log
 ```
 
-You will see lines like:
-```
-[timestamp] auto-detected 2 zones for server 'redis-ro.example.com' (low-latency threshold: 15000us)
-[timestamp] selected same-zone address 0 for 'redis-ro.example.com' (latency: 12000us, zone: 1)
-[timestamp] selected distributed address 2 for 'redis-ro.example.com' (latency: 45000us, zone: 2)
-```
+At level 6 you get two kinds of zone line. When the proxy re-runs zone detection it logs one summary per reader endpoint: how many zones it found, the latency cutoff it used, and the latency range. Then for each read it picks, it logs the chosen address index, the hostname, the measured latency, the assigned zone, and the random draw against `zone_weight` that decided same-zone versus spread. Raise the level to 8 to also see the per-address zone assignments. The exact wording of these lines changes between versions, so match on the address and zone fields rather than the literal text.
 
 ### DNS and zone stats
 
@@ -462,12 +454,19 @@ Per-address fields:
 
 ### How health monitoring works
 
-twemproxy uses passive health monitoring. It does not send active PING commands or probes. Health is worked out from real client request failures and successes.
+twemproxy never sends a PING or opens a probe connection, so it adds no health-check traffic of its own. Health comes from two things working together: ejection driven by real client request failures, and a periodic tick that scores each replica from the failures and latency it has already observed.
+
+Request-failure-driven ejection (the standard twemproxy path):
 
 - Successful request: `server_ok()`, reset the failure count to 0
 - Failed request: `server_failure()`, increment the failure count
 - Server ejected: when failures exceed `server_failure_limit`
 - Automatic retry: after `server_retry_timeout`
+
+Periodic health and latency analysis (the zone-aware additions):
+
+- Every `dns_health_check_interval` seconds each resolved IP gets a fresh health score, computed from its observed failure count and its measured connection latency (a moving average, so a one-off blip does not flip it).
+- A high-latency or failing IP scores lower, which steers zone detection and read selection away from it. The latency that feeds this is measured on normal connections, not from an active probe.
 
 ### Recovery example
 
@@ -494,9 +493,9 @@ With this, a rebooted server is out of rotation for about 10 seconds, then rejoi
 With accumulative DNS resolution (`dns_expiration_minutes`), recovery is more forgiving:
 
 - IP addresses stay in the list during an outage instead of being dropped immediately.
-- Health is tracked per IP.
-- An IP is only removed once it is both unhealthy and no longer showing up in DNS.
-- A healthy server resumes taking traffic straight away.
+- Removal is on a timer, not on health. An IP is dropped once it has not appeared in DNS for `dns_expiration_minutes`. The currently selected IP gets about twice that grace before it goes. Health does not enter into it: an absent IP is removed on the timer even if it was healthy, and being unhealthy does not keep an absent IP in the list.
+- Health is tracked per IP (failure count and latency), and an IP that stops showing up in DNS is also marked unhealthy so routing avoids it, but that is separate from the timer-based removal above.
+- A healthy server that is still in DNS resumes taking traffic straight away.
 
 ### Health check options
 
@@ -505,7 +504,7 @@ With accumulative DNS resolution (`dns_expiration_minutes`), recovery is more fo
 | `auto_eject_hosts` | `false` | Enable automatic ejection and recovery |
 | `server_failure_limit` | `2` | Failures before ejecting a server |
 | `server_retry_timeout` | `30000` | Milliseconds before retrying an ejected server |
-| `dns_expiration_minutes` | `5` | Minutes to keep an IP not seen in DNS (if healthy) |
+| `dns_expiration_minutes` | `5` | Minutes to keep an IP after it stops appearing in DNS, then drop it on the timer (the selected IP gets about 2x this) |
 | `dns_health_check_interval` | `30` | Seconds between health analysis cycles |
 
 For fast failover, set `server_failure_limit: 1` and `server_retry_timeout: 10000`.
