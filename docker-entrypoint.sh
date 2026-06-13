@@ -67,6 +67,7 @@ pools:
 
         # Zone-aware configuration
         zone_aware: true
+        dynamic_endpoint: true
         zone_weight: ${ZONE_WEIGHT}
         dns_resolve_interval: ${DNS_RESOLVE_INTERVAL}
         dns_expiration_minutes: ${DNS_EXPIRATION_MINUTES}
@@ -118,6 +119,6 @@ echo "Nutcracker version:"
 /usr/local/sbin/nutcracker --version
 echo ""
 echo "for stats:  curl -s http://localhost:22222"
-echo ">>> lets go 🚀"
+echo ">>> lets go"
 # Execute the command directly
 exec "$@"
