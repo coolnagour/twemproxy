@@ -659,8 +659,16 @@ nc_resolve_multi_with_hostnames(struct string *name, int port, struct sockinfo *
 
     status = getaddrinfo(node, service, &hints, &ai);
     nc_free(node);
-    
-    if (status < 0) {
+
+    /*
+     * getaddrinfo() returns 0 on success and a nonzero EAI_* code on error.
+     * Those codes are negative ONLY on glibc; on other platforms (BSD/macOS,
+     * musl) a real error is a POSITIVE EAI_* value. A "status < 0" test would
+     * let such a positive error fall through, and the loop below would then walk
+     * the UNINITIALIZED `ai`. Test for any nonzero -- catches every error on
+     * every platform, including glibc's negative codes.
+     */
+    if (status != 0) {
         log_error("address resolution of \"%.*s\" port %d failed: %s",
                   name->len, name->data, port, gai_strerror(status));
         nc_free(addr_array);
