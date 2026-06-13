@@ -229,7 +229,7 @@ services:
 
 ### Security and encryption
 
-There is no TLS to the Redis backend; traffic is plaintext. The parser does not accept any `tls_*` directives — `tls_enabled` / `tls_verify_peer` are rejected as unknown directives (fail-safe, so a config that expects TLS will not start silently thinking it has encryption).
+There is no TLS to the Redis backend; traffic is plaintext. The parser does not accept any `tls_*` directives: `tls_enabled` / `tls_verify_peer` are rejected as unknown directives (fail-safe, so a config that expects TLS will not start silently thinking it has encryption).
 
 ---
 
@@ -587,7 +587,7 @@ A quick checklist:
 
 ### Building on arm64 / aarch64
 
-This fork builds and runs on both x86_64 and arm64 (aarch64) — Apple Silicon
+This fork builds and runs on both x86_64 and arm64 (aarch64). Apple Silicon
 Macs and arm64 Linux (for example AWS Graviton). The vendored
 `contrib/yaml-0.1.4` was repacked with up-to-date `config.guess` / `config.sub`
 so its `./configure` recognises aarch64; without that the bundled libyaml build
