@@ -1378,11 +1378,17 @@ server_dns_resolve(struct server *server)
         /* Update dynamic server connections after initial DNS resolution */
         server_update_dynamic_connections(server);
         
-        /* Validate address count before allocation to prevent excessive memory usage */
-        if (dns->naddresses > 16) { /* Reasonable limit for DNS addresses */
-            log_error("DNS returned excessive address count %"PRIu32" for '%.*s', limiting to 16",
-                      dns->naddresses, server->pname.len, server->pname.data);
-            dns->naddresses = 16;
+        /*
+         * Validate address count before allocation to prevent excessive memory
+         * usage. Clamp to max_addresses (the same cap the accumulate path uses,
+         * and the size the lazy arrays are allocated to) so the two paths share
+         * one source of truth -- a literal here would silently desync if
+         * MAX_ADDRESSES_PER_SERVER is ever bumped.
+         */
+        if (dns->naddresses > dns->max_addresses) {
+            log_error("DNS returned excessive address count %"PRIu32" for '%.*s', limiting to %"PRIu32,
+                      dns->naddresses, server->pname.len, server->pname.data, dns->max_addresses);
+            dns->naddresses = dns->max_addresses;
         }
         
         /* Allocate tracking arrays */
@@ -1512,6 +1518,27 @@ server_dns_resolve(struct server *server)
         
         if (!found) {
             /* This is a new address, add it to our list */
+
+            /*
+             * Cap the accumulate-append at max_addresses (16). The eager
+             * arrays below are realloc-grown per new address, but the lazy
+             * arrays (zone_ids/health_scores/last_health_check) are calloc'd
+             * ONCE to max_addresses and never grown. Letting naddresses pass
+             * max_addresses would make later zone/health indexing of those
+             * lazy arrays write/read out of bounds (heap corruption). It also
+             * breaks the naddresses <= max_addresses invariant that
+             * server_dns_remove_address_at() relies on for its tail-clear.
+             * A rotating reader endpoint can yield >16 distinct IPs over the
+             * accumulation window; drop the surplus with a warning. For our
+             * deployment (<=5 replicas) 16 is ample.
+             */
+            if (dns->naddresses >= dns->max_addresses) {
+                log_warn("DNS address cap %"PRIu32" reached for '%.*s', "
+                         "ignoring new address", dns->max_addresses,
+                         dns->hostname.len, dns->hostname.data);
+                continue;
+            }
+
             /* Reallocate arrays to accommodate new address */
             uint32_t new_size = dns->naddresses + 1;
             
