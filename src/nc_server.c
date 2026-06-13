@@ -1539,35 +1539,46 @@ server_dns_resolve(struct server *server)
                 continue;
             }
 
-            /* Reallocate arrays to accommodate new address */
+            /*
+             * Grow the 8 eager parallel arrays, ALL-OR-NOTHING.
+             *
+             * realloc(p,n) frees/relocates the old block on success but returns
+             * NULL and leaves the ORIGINAL p valid on failure. So we realloc
+             * each array straight back into its dns-> field, checking each
+             * before the next: on any failure we goto nomem WITHOUT bumping
+             * dns->naddresses. The failed array's dns->X is unchanged (old block
+             * intact); the already-grown arrays were written back (valid, just
+             * larger than naddresses); the rest are still at the old size. Since
+             * naddresses is not incremented, every array's allocation is >=
+             * naddresses, so no dns-> pointer dangles at a freed block and
+             * nothing is leaked (fix #2's helper invariant still holds). The
+             * next resolve simply reallocs again.
+             *
+             * The earlier bug realloc'd into LOCALS and wrote them back only
+             * after a combined NULL-check; a later NULL then returned with every
+             * already-grown dns-> array pointing at the block realloc had freed
+             * (use-after-free) and the grown blocks leaked.
+             */
             uint32_t new_size = dns->naddresses + 1;
-            
-            struct sockinfo *new_addr_array = nc_realloc(dns->addresses, new_size * sizeof(struct sockinfo));
-            uint32_t *new_latencies = nc_realloc(dns->latencies, new_size * sizeof(uint32_t));
-            int64_t *new_last_latency_check = nc_realloc(dns->last_latency_check, new_size * sizeof(int64_t));
-            uint32_t *new_failure_counts = nc_realloc(dns->failure_counts, new_size * sizeof(uint32_t));
-            int64_t *new_last_seen = nc_realloc(dns->last_seen, new_size * sizeof(int64_t));
-            int64_t *new_last_connected = nc_realloc(dns->last_connected, new_size * sizeof(int64_t));
-            uint64_t *new_request_counts = nc_realloc(dns->request_counts, new_size * sizeof(uint64_t));
-            struct string *new_hostnames_array = nc_realloc(dns->hostnames, new_size * sizeof(struct string));
-            
-            if (new_addr_array == NULL || new_latencies == NULL || 
-                new_last_latency_check == NULL || new_failure_counts == NULL ||
-                new_last_seen == NULL || new_last_connected == NULL || new_request_counts == NULL || new_hostnames_array == NULL) {
-                log_error("failed to allocate memory for new DNS address");
-                if (new_addresses) nc_free(new_addresses);
-                return NC_ENOMEM;
-            }
-            
-            dns->addresses = new_addr_array;
-            dns->latencies = new_latencies;
-            dns->last_latency_check = new_last_latency_check;
-            dns->failure_counts = new_failure_counts;
-            dns->last_seen = new_last_seen;
-            dns->last_connected = new_last_connected;
-            dns->request_counts = new_request_counts;
-            dns->hostnames = new_hostnames_array;
-            
+            void *p;
+
+            p = nc_realloc(dns->addresses, new_size * sizeof(*dns->addresses));
+            if (p == NULL) goto nomem; dns->addresses = p;
+            p = nc_realloc(dns->latencies, new_size * sizeof(*dns->latencies));
+            if (p == NULL) goto nomem; dns->latencies = p;
+            p = nc_realloc(dns->last_latency_check, new_size * sizeof(*dns->last_latency_check));
+            if (p == NULL) goto nomem; dns->last_latency_check = p;
+            p = nc_realloc(dns->failure_counts, new_size * sizeof(*dns->failure_counts));
+            if (p == NULL) goto nomem; dns->failure_counts = p;
+            p = nc_realloc(dns->last_seen, new_size * sizeof(*dns->last_seen));
+            if (p == NULL) goto nomem; dns->last_seen = p;
+            p = nc_realloc(dns->last_connected, new_size * sizeof(*dns->last_connected));
+            if (p == NULL) goto nomem; dns->last_connected = p;
+            p = nc_realloc(dns->request_counts, new_size * sizeof(*dns->request_counts));
+            if (p == NULL) goto nomem; dns->request_counts = p;
+            p = nc_realloc(dns->hostnames, new_size * sizeof(*dns->hostnames));
+            if (p == NULL) goto nomem; dns->hostnames = p;
+
             /* Add the new address */
             memcpy(&dns->addresses[dns->naddresses], &new_addresses[i], sizeof(struct sockinfo));
             dns->latencies[dns->naddresses] = DEFAULT_LATENCY_USEC;
@@ -1612,9 +1623,24 @@ server_dns_resolve(struct server *server)
                 dns->last_zone_analysis = 0; /* Reset to force immediate re-analysis */
                 log_warn("🌍 forcing zone re-analysis for new server %s", addr_str);
             }
+
+            /* Append done; advance to the next resolved address. */
+            continue;
+
+        nomem:
+            /*
+             * A grow realloc failed. dns->naddresses was NOT incremented, so
+             * every dns-> array is still allocated to >= naddresses (the failed
+             * one to its old size, the already-grown ones one larger) -- no
+             * dangling pointer, no leak. Free the temporary resolved list (the
+             * same cleanup the old combined-failure branch did) and bail.
+             */
+            log_error("failed to allocate memory for new DNS address");
+            if (new_addresses) nc_free(new_addresses);
+            return NC_ENOMEM;
         }
     }
-    
+
     /* Now expire old addresses that haven't been seen recently */
     uint32_t removed_count = 0;
     for (i = 0; i < dns->naddresses; ) {

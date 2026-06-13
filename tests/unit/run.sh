@@ -187,11 +187,30 @@ bin_remove="$(build_test test_remove_address "$here/test_remove_address.c")"
 bin_cap="$(build_test test_address_cap "$here/test_address_cap.c")"
 bin_nocap="$(build_test test_address_cap_nocap "$here/test_address_cap.c" -DTEST_NO_CAP)"
 
+# --- fix #4: all-or-nothing realloc in the accumulate-append ----------------
+# Two builds from one source. The nc_realloc failure-injection shim is wired in
+# WITHIN the source (an #undef/#define after the headers -- a command-line
+# -Dnc_realloc gets clobbered by nc_util.h's own macro), so no extra flag here:
+#   fixed : mirrors the FIXED write-back (realloc straight into dns->*, goto
+#           nomem on any failure) -> a forced mid-sequence realloc failure
+#           leaves no dangling dns->* and does not bump naddresses -> exit 0,
+#           clean under libgmalloc + leaks.
+#   buggy : -DTEST_REALLOC_BUGGY mirrors the PRE-fix write-back (realloc into
+#           locals, combined check, return-without-write-back) -> the same
+#           forced failure leaves dns->* dangling at freed blocks (UAF) and
+#           leaks the grown blocks. Must exit non-zero; under libgmalloc the
+#           dangling read traps. This is the TDD red.
+bin_realloc="$(build_test test_realloc_safety "$here/test_realloc_safety.c")"
+bin_realloc_buggy="$(build_test test_realloc_safety_buggy "$here/test_realloc_safety.c" \
+                  -DTEST_REALLOC_BUGGY)"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (fix #2 alignment)"     || fail=1
 run_test    "$bin_cap"    0 "test_address_cap (fix #3 cap, fixed build)" || fail=1
 run_nonzero "$bin_nocap"    "test_address_cap (fix #3, NO-CAP bug reproduction)" || fail=1
+run_test    "$bin_realloc" 0 "test_realloc_safety (fix #4 all-or-nothing, fixed build)" || fail=1
+run_nonzero "$bin_realloc_buggy" "test_realloc_safety (fix #4, BUGGY-writeback UAF/leak reproduction)" || fail=1
 
 # Heap-guard demonstration: only meaningful (and only safe) under a guard.
 if [ "${LIBGMALLOC:-0}" = "1" ] && [ -f /usr/lib/libgmalloc.dylib ]; then
