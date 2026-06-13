@@ -1,0 +1,137 @@
+# Docker Compose integration test for the twemproxy fork's headline feature:
+# in-process discovery of MANY read replicas behind ONE hostname, via DNS.
+#
+# Why this stands in for ElastiCache
+# ----------------------------------
+# In production the READ pool points at one ElastiCache *reader endpoint*
+# hostname that DNS-resolves to several replica IPs (one A-record per replica).
+# The fork's read pool (zone_aware: true + dynamic_endpoint: true) resolves that
+# single name on a timer, accumulates every IP it sees, health-checks them, and
+# routes across them -- all in-process, no client-side sharding.
+#
+# Docker Compose's embedded DNS behaves the same way: a service scaled to N
+# containers resolves its service name to N A-records in one lookup (verified:
+# `getent hosts redis-read` returns 3 IPs). So `redis-read` scaled to 3 is a
+# faithful local stand-in for a 3-replica reader endpoint -- we exercise real
+# discovery, accumulation, health-based ejection, and rediscovery WITHOUT AWS.
+#
+# Zone-routing-by-latency is NOT exercised here: it needs distinct per-AZ
+# latencies that this flat bridge network does not have. Zone *selection* stays
+# AWS-gated; this harness covers discovery / health / failover. (zone_aware is
+# left on because that is the production read-pool shape and it must not break
+# discovery.)
+#
+# Topology
+# --------
+#   redis-write   1 container, the primary (write pool backend).
+#   redis-read    scaled to 3 by run.sh; each is a REAL redis replica of
+#                 redis-write (replicaof), so a value SET via the write port is
+#                 visible via the read port -- the read-back assertion is real.
+#   twemproxy     built from this repo's own Dockerfile; write pool -> 6379,
+#                 read pool -> 6378, stats -> 22222.
+#
+# Driven by run.sh on the host. Do not run this compose file by hand; run.sh
+# sets the scale, waits for health, and tears everything down on exit.
+
+services:
+  # Write-pool backend: the single primary. Persistence is off -- this is a
+  # throwaway test box, and disabling RDB/AOF avoids fork() + disk noise.
+  redis-write:
+    image: redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks:
+      - twemnet
+
+  # Read-pool backends: scaled to 3 by run.sh (--scale redis-read=3). Each one
+  # is a real replica of redis-write, so writes propagate and reads return the
+  # written value. `replica-read-only no` is irrelevant for our GETs but keeps
+  # the box permissive on a trusted test network. No container_name / no host
+  # port -- a scaled service cannot have either.
+  redis-read:
+    image: redis:7
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--protected-mode"
+      - "no"
+      - "--replicaof"
+      - "redis-write"
+      - "6379"
+    depends_on:
+      redis-write:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks:
+      - twemnet
+
+  # The fork under test, built from this repo's Dockerfile.
+  #
+  # SHORT intervals so the test converges in seconds, not the production
+  # minutes: re-resolve + health-check every 3s. dns_expiration_minutes is in
+  # MINUTES and 1 is the floor, so a killed replica's IP is pruned from the
+  # discovered set ~60s after it stops appearing in DNS (assertion #5 budgets
+  # for this). The add path is immediate -- a NEW IP is accumulated on the very
+  # next 3s resolve tick, so rediscovery (2 -> 3) is fast.
+  #
+  # command override: the image's default CMD binds stats to 127.0.0.1 (fine for
+  # the in-container healthcheck). We add --stats-addr=0.0.0.0 so run.sh can
+  # scrape /stats from the host. Only safe because this is an isolated, trusted
+  # test network.
+  twemproxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: twemproxy-fork:test
+    environment:
+      WRITE_HOST: "redis-write:6379"
+      READ_HOST: "redis-read:6379"
+      DNS_RESOLVE_INTERVAL: "3"
+      DNS_HEALTH_CHECK_INTERVAL: "3"
+      DNS_EXPIRATION_MINUTES: "1"
+      # Several connections per server + dynamic scaling so the proxy actually
+      # spreads load across the discovered replicas under redis-benchmark.
+      SERVER_CONNECTIONS: "3"
+      DYNAMIC_SERVER_CONNECTIONS: "true"
+      MAX_SERVER_CONNECTIONS: "8"
+      CONNECTION_MAX_LIFETIME: "30"
+    command:
+      - "/usr/local/sbin/nutcracker"
+      - "--conf-file=/etc/twemproxy/nutcracker.yml"
+      - "--output=/var/log/twemproxy/nutcracker.log"
+      - "--stats-addr=0.0.0.0"
+      - "--stats-port=22222"
+      - "--stats-interval=5000"
+    # Only the stats port is published to the host -- run.sh scrapes /stats with
+    # the host's curl. The redis read/write ports (6378/6379) are deliberately
+    # NOT published: all redis traffic in this test is driven from inside a
+    # backend container (docker compose exec) over the twemnet network, hitting
+    # the proxy by service name (twemproxy:6379 / twemproxy:6378). Not publishing
+    # them avoids colliding with a local redis or another project's container
+    # already holding host 6379/6378 (a common dev-box clash).
+    ports:
+      - "22222:22222" # stats (HTTP)
+    depends_on:
+      redis-write:
+        condition: service_healthy
+      redis-read:
+        condition: service_healthy
+    networks:
+      - twemnet
+
+networks:
+  # Explicit user-defined bridge: gives us Docker's embedded DNS, which is what
+  # returns all N A-records for the scaled redis-read service.
+  twemnet:
+    driver: bridge
