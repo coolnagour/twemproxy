@@ -278,6 +278,17 @@ You do not set zone IDs or latency thresholds. It adapts to whatever infrastruct
 
 ---
 
+## Failover
+
+zone_weight is a preference, not a hard pin. The proxy only sends reads to a same-zone replica when there is a healthy one. If a whole zone goes down, its replicas get marked unhealthy and drop out of the pool, so reads move to a healthy replica in another zone on their own. Even at zone_weight: 100 you keep serving reads as long as any zone is up. It only runs out of road when every replica in every zone is unhealthy.
+
+Two things worth knowing if you set it to 100:
+
+- It is never literally 100%. About 5% of reads go to a random healthy replica, cross-zone included, to keep the latency numbers fresh so the failover targets stay known good.
+- Failover is health driven, and health comes from real request failures. So when a zone drops there is a short window where some reads hit the failing replicas and retry before they get excluded. Set server_failure_limit: 1 and a short server_retry_timeout for fast failover.
+
+---
+
 ## Traditional configuration
 
 All the original twemproxy options still work:
