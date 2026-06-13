@@ -1,100 +1,67 @@
 /*
  * Standalone unit test for the FIRST-RESOLUTION out-of-memory path of
- * server_dns_resolve() (prod-hardening bug #2).
+ * server_dns_resolve(), on the array-of-structs layout.
  *
  * ---------------------------------------------------------------------------
- * THE BUG THIS GUARDS (pre-fix server_dns_resolve(), src/nc_server.c)
+ * WHAT THIS GUARDS
  * ---------------------------------------------------------------------------
- * On the FIRST successful DNS resolve, the first-resolution branch:
+ * On the FIRST successful DNS resolve, server_dns_resolve() publishes the
+ * resolved count and then allocates the per-address array:
  *
- *     dns->addresses  = new_addresses;     // ADOPT the resolved list
- *     dns->naddresses = new_naddresses;    // ...and publish the count (>0)
+ *     dns->naddresses = new_naddresses;     // publish the count (>0)
  *     ... clamp naddresses to max_addresses ...
- *     dns->latencies          = nc_alloc(...);   // eager parallel arrays
- *     dns->last_latency_check = nc_alloc(...);
- *     dns->failure_counts     = nc_alloc(...);
- *     dns->last_seen          = nc_alloc(...);
- *     dns->last_connected     = nc_alloc(...);
- *     dns->request_counts     = nc_alloc(...);
- *     dns->hostnames          = nc_alloc(...);
- *     if (any of those == NULL) {
- *         // pre-fix cleanup: free + NULL the eager arrays only
- *         ... nc_free(dns->latencies); dns->latencies = NULL; ... (etc) ...
- *         free_hostnames_temp(new_hostnames, new_naddresses);
- *         return NC_ENOMEM;                // <-- BUT adoption NOT reverted!
+ *     dns->addrs = nc_alloc(naddresses * sizeof(struct dns_addr));
+ *     if (dns->addrs == NULL) {
+ *         // MUST revert: roll back to an empty, self-consistent dns
+ *         dns->naddresses = 0;
+ *         ... free the temp resolved list + temp hostnames ...
+ *         return NC_ENOMEM;
  *     }
+ *     ... init each addr from the resolved list ...
  *
- * The adoption (dns->addresses = new_addresses; dns->naddresses = N>0) is left
- * in place while every parallel tracking array is now NULL. So the dns is
- * INCONSISTENT: naddresses says "I have N addresses" but latencies /
- * last_connected / request_counts / ... are all NULL. The very next client
- * request or DNS tick that indexes a parallel array (e.g. dns->latencies[idx],
- * dns->last_connected[idx]) dereferences NULL -> crash.
+ * If the alloc fails and the count is NOT rolled back, the dns is INCONSISTENT:
+ * naddresses says ">0" but addrs is NULL. The next client request or DNS tick
+ * that indexes dns->addrs[idx] (guarded only by naddresses>0) dereferences NULL
+ * -> crash. The fix rolls naddresses back to 0 so addrs==NULL && naddresses==0:
+ * no consumer can index, and the next resolve retries cleanly (last_resolved is
+ * not set on this path, so the server stays "due").
  *
- * Worse, last_resolved stays at its prior value but addresses!=NULL, so the
- * "first resolution" branch (guarded by addresses==NULL || naddresses==0) is no
- * longer taken on the next resolve either -- the dns is wedged inconsistent.
- *
- * ---------------------------------------------------------------------------
- * THE FIX (mirrored below, gated by TEST_PREFIX_NO_REVERT)
- * ---------------------------------------------------------------------------
- * In the alloc-failure cleanup, REVERT the adoption too -- roll the dns all the
- * way back to an EMPTY, self-consistent state:
- *
- *     ... free + NULL the eager arrays (as before) ...
- *     nc_free(dns->addresses);            // owns new_addresses now
- *     dns->addresses  = NULL;
- *     dns->naddresses = 0;
- *     free_hostnames_temp(new_hostnames, new_naddresses);
- *     return NC_ENOMEM;
- *
- * Now naddresses==0 && addresses==NULL: no parallel-array index can run (every
- * consumer guards on naddresses/addresses), and the next resolve takes the
- * first-resolution branch again (addresses==NULL) and retries cleanly.
- * last_resolved is NOT set on this path, so server_dns_resolve_due() still
- * reports the server as due.
+ * Pre-refactor history: the first-resolution branch ADOPTED the resolved list
+ * into dns->addresses and allocated EIGHT parallel arrays; the bug was leaving
+ * that adoption published with the parallel arrays NULL. After folding into a
+ * single dns_addr array, the resolved list is a TEMP that is copied-from and
+ * freed (the types differ), and there is ONE alloc -- but the SAME contract
+ * (revert to empty on OOM) is what this test drives.
  *
  * ---------------------------------------------------------------------------
  * WHY A MIRROR (read before changing the test)
  * ---------------------------------------------------------------------------
- * The first-resolution block is INLINE in server_dns_resolve(), which only
- * reaches it AFTER a successful nc_resolve_multi_with_hostnames() (real DNS) --
- * so it cannot be driven offline, and the eager-array OOM cannot be injected
- * into the real call. So -- exactly like test_realloc_safety.c mirrors the
- * accumulate realloc block and test_address_cap.c mirrors the cap -- the
- * function below MIRRORS the adopt + eager-alloc + alloc-failure-cleanup block,
- * run against a REAL, production-shaped struct server_dns (the real struct
- * layout from the linked nc_server.c object). The ONLY behavioural difference
- * between the two builds is whether the cleanup reverts the adoption, gated by
- * TEST_PREFIX_NO_REVERT.
+ * The first-resolution block is INLINE in server_dns_resolve(), reachable only
+ * after a real DNS success, so the alloc OOM cannot be injected into the real
+ * call. first_resolution_adopt() below MIRRORS the publish-count + alloc +
+ * failure-cleanup block, run against a REAL struct server_dns. The ONLY
+ * behavioural difference between the two builds is whether the cleanup reverts
+ * the count, gated by TEST_PREFIX_NO_REVERT.
  *
- *     *** KEEP first_resolution_adopt()'s adopt + alloc + cleanup block IN SYNC
- *         with the first-resolution branch of server_dns_resolve() in
- *         src/nc_server.c. ***
+ *     *** KEEP first_resolution_adopt()'s block IN SYNC with the
+ *         first-resolution branch of server_dns_resolve() in src/nc_server.c. ***
  *
  * ---------------------------------------------------------------------------
  * FAILURE INJECTION
  * ---------------------------------------------------------------------------
- * Like test_realloc_safety.c swaps nc_realloc, this file swaps the production
- * nc_alloc macro for a counting shim via an in-source #undef/#define AFTER the
- * headers (a command-line -Dnc_alloc gets clobbered by nc_util.h's own macro).
- * Disarmed, the shim forwards to the real _nc_alloc. Armed (arm_alloc_fail_after
- * (K)) it lets the next K allocs succeed and returns NULL on the (K+1)th -- a
- * real partial OOM partway through the eager-array allocations.
+ * Swaps the production nc_alloc macro for a counting shim via an in-source
+ * #undef/#define AFTER the headers. arm_alloc_fail_after(K) lets K allocs
+ * succeed then fails the (K+1)th.
  *
  * ---------------------------------------------------------------------------
  * BEFORE/AFTER (TDD red->green)
  * ---------------------------------------------------------------------------
- *   default build (FIXED cleanup): after a forced eager-array OOM, the dns is
- *     reverted to addresses==NULL, naddresses==0; a simulated "next request"
- *     access is a guarded no-op (nothing to index) -> exit 0, clean under ASan /
- *     libgmalloc / leaks.
- *
- *   -DTEST_PREFIX_NO_REVERT (PRE-FIX cleanup): the same forced OOM leaves
- *     addresses adopted (non-NULL) and naddresses>0 while the parallel arrays
- *     are NULL. We assert the dns is consistent (it is NOT -> the asserts fire,
- *     plain build exits non-zero) AND then perform the access a real consumer
- *     would -- index dns->latencies[0] guarded by naddresses>0 -- which is a
+ *   default build (FIXED): after a forced OOM the dns is reverted to addrs==NULL,
+ *     naddresses==0; a simulated "next request" access is a guarded no-op -> exit
+ *     0, clean under ASan / libgmalloc / leaks.
+ *   -DTEST_PREFIX_NO_REVERT (PRE-FIX): the same OOM leaves naddresses>0 while
+ *     addrs is NULL. We assert consistency (it is NOT -> asserts fire, plain
+ *     build non-zero) then index dns->addrs[0] guarded by naddresses>0 -- a
  *     genuine NULL deref that ASan/libgmalloc trap. This is the TDD red.
  *
  * Build/run: see tests/unit/run.sh
@@ -118,8 +85,8 @@
 void nc_post_run(struct instance *nci) { (void)nci; }
 
 /*
- * File-local in src/nc_server.c, mirrored here (same convention as
- * test_realloc_safety.c / test_dns_init_deinit.c). KEEP IN SYNC.
+ * File-local in src/nc_server.c, mirrored here (same convention as the sibling
+ * tests). KEEP IN SYNC.
  */
 #define TEST_MAX_ADDRESSES_PER_SERVER  16
 #define TEST_DEFAULT_LATENCY_USEC      100
@@ -137,10 +104,7 @@ static int failures = 0;
     } while (0)
 
 /* ------------------------------------------------------------------------- *
- * nc_alloc failure-injection shim (mirrors the nc_realloc shim in
- * test_realloc_safety.c). Wired to the mirror via an in-source #undef/#define of
- * nc_alloc further down -- NOT a command-line -Dnc_alloc (nc_util.h re-#defines
- * nc_alloc and would clobber it).
+ * nc_alloc failure-injection shim.
  * ------------------------------------------------------------------------- */
 
 static int  alloc_calls_left = -1;     /* <0 == disarmed (forward everything) */
@@ -160,12 +124,6 @@ disarm_alloc(void)
     alloc_calls_left = -1;
 }
 
-/*
- * Drop-in for nc_alloc(_s). The production macro forwards file/line; here a
- * 1-arg shim is enough (this translation unit is the only caller of the macro
- * after the #define below -- nc_server.c keeps the real macro). Armed: count
- * down, return NULL on the failing call. Disarmed: forward to _nc_alloc.
- */
 static void *
 test_alloc(size_t size)
 {
@@ -180,9 +138,8 @@ test_alloc(size_t size)
 
 /* ------------------------------------------------------------------------- *
  * Production-shaped EMPTY server_dns fixture: a freshly-initialised dns exactly
- * as server_dns_init() leaves it BEFORE the first resolve (all arrays NULL,
- * naddresses 0). Built with the REAL allocator (shim disarmed at this point), so
- * the only allocs the shim sees are inside first_resolution_adopt().
+ * as server_dns_init() leaves it BEFORE the first resolve (addrs NULL,
+ * naddresses 0). Built with the REAL allocator (shim disarmed here).
  * ------------------------------------------------------------------------- */
 static struct server_dns *
 make_empty_dns(void)
@@ -191,13 +148,12 @@ make_empty_dns(void)
 
     dns->max_addresses = TEST_MAX_ADDRESSES_PER_SERVER;
     dns->naddresses = 0;
-    dns->addresses = NULL;
+    dns->addrs = NULL;
     dns->last_resolved = 0;
     dns->resolve_interval = 30 * 1000000;
     dns->next_zone_id = 1;
     string_init(&dns->hostname);
     string_copy(&dns->hostname, (uint8_t *)"reader.example", 14);
-    /* nc_zalloc already NULLed every parallel-array pointer. */
     return dns;
 }
 
@@ -205,27 +161,22 @@ static void
 free_dns(struct server_dns *dns)
 {
     uint32_t i;
-    for (i = 0; i < dns->naddresses; i++) {
-        if (dns->hostnames != NULL && dns->hostnames[i].data != NULL) {
-            string_deinit(&dns->hostnames[i]);
+    if (dns->addrs != NULL) {
+        for (i = 0; i < dns->naddresses; i++) {
+            if (dns->addrs[i].hostname.data != NULL) {
+                string_deinit(&dns->addrs[i].hostname);
+            }
         }
+        nc_free(dns->addrs);
     }
-    if (dns->addresses)          nc_free(dns->addresses);
-    if (dns->latencies)          nc_free(dns->latencies);
-    if (dns->last_latency_check) nc_free(dns->last_latency_check);
-    if (dns->failure_counts)     nc_free(dns->failure_counts);
-    if (dns->last_seen)          nc_free(dns->last_seen);
-    if (dns->last_connected)     nc_free(dns->last_connected);
-    if (dns->request_counts)     nc_free(dns->request_counts);
-    if (dns->hostnames)          nc_free(dns->hostnames);
-    if (dns->hostname.data)      string_deinit(&dns->hostname);
+    if (dns->hostname.data) string_deinit(&dns->hostname);
     nc_free(dns);
 }
 
 /*
  * Build a fake resolved list (what nc_resolve_multi_with_hostnames would return)
- * via the REAL allocator -- this is the new_addresses the first-resolution branch
- * adopts. Allocated while the shim is disarmed.
+ * via the REAL allocator -- a TEMP sockinfo array the first-resolution branch
+ * copies from. Allocated while the shim is disarmed.
  */
 static struct sockinfo *
 make_resolved(uint32_t n)
@@ -246,80 +197,54 @@ make_resolved(uint32_t n)
 
 /*
  * Route the mirror's nc_alloc through the failure-injection shim. Must be done
- * HERE, not via -Dnc_alloc: nc_util.h unconditionally re-#defines nc_alloc(_s),
- * so a command-line define is clobbered. We #undef + point nc_alloc at the shim
- * AFTER all headers + fixtures are compiled, so only first_resolution_adopt()
- * below is affected; make_* / free_dns above keep the real nc_alloc.
+ * HERE, not via -Dnc_alloc. We #undef + point nc_alloc at the shim AFTER all
+ * headers + fixtures are compiled, so only first_resolution_adopt() is affected.
  */
 #undef nc_alloc
 #define nc_alloc(_s) test_alloc((size_t)(_s))
 
 /* ------------------------------------------------------------------------- *
- * MIRROR of the first-resolution branch of server_dns_resolve(): adopt
- * new_addresses, clamp the count, alloc the eager parallel arrays, and -- on a
- * forced alloc failure -- run the cleanup. The TWO builds differ ONLY in whether
- * the cleanup reverts the adoption (the fix), gated by TEST_PREFIX_NO_REVERT.
+ * MIRROR of the first-resolution branch of server_dns_resolve(): publish the
+ * count, clamp it, alloc the single dns_addr array, and -- on a forced alloc
+ * failure -- run the cleanup. The TWO builds differ ONLY in whether the cleanup
+ * reverts the count (the fix), gated by TEST_PREFIX_NO_REVERT.
  *
  *     *** KEEP IN SYNC with the first-resolution branch in src/nc_server.c. ***
  *
- * Returns NC_OK on full success, NC_ENOMEM on the forced eager-array OOM.
+ * Returns NC_OK on full success, NC_ENOMEM on the forced array OOM.
+ * `new_addresses` is the TEMP resolved list (freed on every exit, like prod).
  * ------------------------------------------------------------------------- */
 static int
 first_resolution_adopt(struct server_dns *dns, struct sockinfo *new_addresses,
                        uint32_t new_naddresses,
                        char **new_hostnames, uint32_t new_hostnames_n)
 {
-    /* ADOPT (exactly as production: publish addresses + count >0). */
-    dns->addresses = new_addresses;
+    uint32_t i;
+
+    /* Publish the count first (so a dynamic-connections update would see it). */
     dns->naddresses = new_naddresses;
 
     if (dns->naddresses > dns->max_addresses) {
         dns->naddresses = dns->max_addresses;
     }
 
-    dns->latencies          = nc_alloc(dns->naddresses * sizeof(uint32_t));
-    dns->last_latency_check = nc_alloc(dns->naddresses * sizeof(int64_t));
-    dns->failure_counts     = nc_alloc(dns->naddresses * sizeof(uint32_t));
-    dns->last_seen          = nc_alloc(dns->naddresses * sizeof(int64_t));
-    dns->last_connected     = nc_alloc(dns->naddresses * sizeof(int64_t));
-    dns->request_counts     = nc_alloc(dns->naddresses * sizeof(uint64_t));
-    dns->hostnames          = nc_alloc(dns->naddresses * sizeof(struct string));
-
-    if (dns->latencies == NULL || dns->last_latency_check == NULL ||
-        dns->failure_counts == NULL || dns->last_seen == NULL ||
-        dns->last_connected == NULL || dns->request_counts == NULL ||
-        dns->hostnames == NULL) {
-        /* Free + NULL the eager arrays (both builds do this). */
-        if (dns->latencies != NULL)          { nc_free(dns->latencies);          dns->latencies = NULL; }
-        if (dns->last_latency_check != NULL)  { nc_free(dns->last_latency_check);  dns->last_latency_check = NULL; }
-        if (dns->failure_counts != NULL)      { nc_free(dns->failure_counts);      dns->failure_counts = NULL; }
-        if (dns->last_seen != NULL)           { nc_free(dns->last_seen);           dns->last_seen = NULL; }
-        if (dns->last_connected != NULL)      { nc_free(dns->last_connected);      dns->last_connected = NULL; }
-        if (dns->request_counts != NULL)      { nc_free(dns->request_counts);      dns->request_counts = NULL; }
-        if (dns->hostnames != NULL)           { nc_free(dns->hostnames);           dns->hostnames = NULL; }
-
+    /* One allocation for the whole address array. */
+    dns->addrs = nc_alloc(dns->naddresses * sizeof(struct dns_addr));
+    if (dns->addrs == NULL) {
 #ifdef TEST_PREFIX_NO_REVERT
         /*
-         * PRE-FIX cleanup: adoption NOT reverted. dns->addresses still points at
-         * new_addresses and dns->naddresses is still >0 while every parallel
-         * array is NULL -> inconsistent dns (the bug). We must still release
-         * new_addresses so THIS test does not leak it on the buggy path (the
-         * real bug is the inconsistency, not a leak), but we deliberately leave
-         * addresses/naddresses published to reproduce the inconsistency the fix
-         * removes. To both (a) reproduce the dangling-index hazard and (b) not
-         * leak, free the block but leave the pointer published (a faithful stand-
-         * in for "addresses adopted, arrays gone").
+         * PRE-FIX cleanup: count NOT reverted. dns->naddresses stays >0 while
+         * dns->addrs is NULL -> inconsistent dns (the bug). The temp resolved
+         * list is freed (it was never adopted -- the types differ), so this test
+         * does not leak it; we deliberately leave naddresses published to
+         * reproduce the inconsistency the fix removes.
          */
-        /* leave dns->addresses / dns->naddresses as-is (the inconsistency) */
+        /* leave dns->naddresses as-is (the inconsistency) */
 #else
-        /*
-         * FIXED cleanup: revert the adoption to an EMPTY, consistent dns.
-         * new_addresses lives in dns->addresses, so freeing dns->addresses
-         * releases it.
-         */
-        if (dns->addresses != NULL) { nc_free(dns->addresses); dns->addresses = NULL; }
+        /* FIXED cleanup: revert the count to an EMPTY, consistent dns. */
         dns->naddresses = 0;
 #endif
+        if (new_addresses) nc_free(new_addresses);
         if (new_hostnames != NULL) {
             for (uint32_t hi = 0; hi < new_hostnames_n; hi++) {
                 if (new_hostnames[hi] != NULL) nc_free(new_hostnames[hi]);
@@ -330,19 +255,18 @@ first_resolution_adopt(struct server_dns *dns, struct sockinfo *new_addresses,
     }
 
     /* Full-success init (not exercised by the OOM test, kept for fidelity). */
-    {
-        uint32_t i;
-        for (i = 0; i < dns->naddresses; i++) {
-            dns->latencies[i] = TEST_DEFAULT_LATENCY_USEC;
-            dns->last_latency_check[i] = 0;
-            dns->failure_counts[i] = 0;
-            dns->last_seen[i] = 1;
-            dns->last_connected[i] = 0;
-            dns->request_counts[i] = 0;
-            string_init(&dns->hostnames[i]);
-            string_copy(&dns->hostnames[i], dns->hostname.data, dns->hostname.len);
-        }
+    for (i = 0; i < dns->naddresses; i++) {
+        struct dns_addr *a = &dns->addrs[i];
+        memset(a, 0, sizeof(*a));
+        memcpy(&a->addr, &new_addresses[i], sizeof(struct sockinfo));
+        a->latency = TEST_DEFAULT_LATENCY_USEC;
+        a->latency_measured = false;
+        a->last_seen = 1;
+        a->health_score = 100;
+        string_init(&a->hostname);
+        string_copy(&a->hostname, dns->hostname.data, dns->hostname.len);
     }
+    if (new_addresses) nc_free(new_addresses);
     if (new_hostnames != NULL) {
         for (uint32_t hi = 0; hi < new_hostnames_n; hi++) {
             if (new_hostnames[hi] != NULL) nc_free(new_hostnames[hi]);
@@ -379,61 +303,49 @@ main(void)
     int rc;
 
     /*
-     * Fail the 4th eager alloc (3 succeed first): a genuine mid-sequence OOM
-     * after the adoption, with some arrays allocated and some not -- the exact
-     * shape that exposes the missing revert.
+     * Fail the FIRST alloc the mirror makes (the dns_addr array alloc). With one
+     * array there is exactly one alloc on this path, so arm_alloc_fail_after(0)
+     * fails it -- the exact shape that exposes a missing revert.
      */
-    arm_alloc_fail_after(3);
+    arm_alloc_fail_after(0);
     rc = first_resolution_adopt(dns, resolved, n, temp_hn, n);
     disarm_alloc();
 
     CHECK(rc == NC_ENOMEM,
-          "expected NC_ENOMEM from forced eager-array OOM, got %d", rc);
+          "expected NC_ENOMEM from forced array OOM, got %d", rc);
 
 #ifdef TEST_PREFIX_NO_REVERT
     /*
      * RED: the pre-fix cleanup leaves the dns INCONSISTENT. Assert the
-     * consistency the fix guarantees -- which the buggy build VIOLATES, so these
-     * fire and a plain build exits non-zero.
+     * consistency the fix guarantees -- which the buggy build VIOLATES.
      */
     CHECK(dns->naddresses == 0,
-          "pre-fix: naddresses=%u after OOM (adoption not reverted) -- "
-          "inconsistent with NULL parallel arrays", dns->naddresses);
-    CHECK(dns->addresses == NULL,
-          "pre-fix: addresses still adopted (non-NULL) after OOM while parallel "
-          "arrays are NULL -- inconsistent dns");
+          "pre-fix: naddresses=%u after OOM (count not reverted) -- inconsistent "
+          "with a NULL addrs array", dns->naddresses);
+    CHECK(dns->addrs == NULL,
+          "pre-fix: addrs is NULL after OOM (expected) while naddresses>0 -- "
+          "inconsistent dns");
 
     /*
-     * Now do exactly what the next client request / DNS tick does: a consumer
-     * sees naddresses>0 and indexes a parallel array. On the buggy dns that
-     * array is NULL -> genuine NULL deref (ASan/libgmalloc trap here). Guarded
-     * by the buggy naddresses>0 so it only runs when the inconsistency exists.
+     * Do exactly what the next client request / DNS tick does: a consumer sees
+     * naddresses>0 and indexes the addrs array. On the buggy dns that array is
+     * NULL -> genuine NULL deref (ASan/libgmalloc trap here).
      */
-    if (dns->naddresses > 0 && dns->addresses != NULL) {
+    if (dns->naddresses > 0 && dns->addrs == NULL) {
         volatile uint32_t sink = 0;
-        /* dns->latencies is NULL on the buggy path -> NULL[0] deref. */
-        sink += dns->latencies[0];
-        sink += (uint32_t)dns->last_connected[0];
+        sink += dns->addrs[0].latency;        /* NULL[0] deref */
         (void)sink;
-        /* If we reach here without trapping (no sanitizer), still a failure. */
         CHECK(false,
-              "pre-fix: indexed a parallel array on the inconsistent dns "
-              "without trapping -- NULL deref went unnoticed");
+              "pre-fix: indexed addrs on the inconsistent dns without trapping -- "
+              "NULL deref went unnoticed");
     }
 
-    /*
-     * If we get here on a plain (no-sanitizer) build the deref above did not
-     * crash the process, so the asserts are our evidence. free_dns is safe:
-     * dns->addresses still aliases the live `resolved` block (we never freed it
-     * on the buggy path), so it is freed exactly once here. (resolved is owned
-     * solely via dns->addresses now -- do not free it separately.)
-     */
     free_dns(dns);
 
     if (failures > 0) {
         printf("EXPECTED-FAIL (pre-fix no-revert build): %d assertion(s) -- "
-               "adoption left published with NULL parallel arrays; the next "
-               "parallel-array index is a NULL deref\n", failures);
+               "count left published with a NULL addrs array; the next index is a "
+               "NULL deref\n", failures);
         return 1;
     }
     fprintf(stderr,
@@ -442,27 +354,21 @@ main(void)
     return 2;
 #else
     /*
-     * GREEN: the fixed cleanup reverted the adoption. The dns must be EMPTY and
+     * GREEN: the fixed cleanup reverted the count. The dns must be EMPTY and
      * self-consistent, and a simulated "next request" access must be a guarded
-     * no-op (no parallel array to index because naddresses==0).
+     * no-op (no array to index because naddresses==0).
      */
     CHECK(dns->naddresses == 0,
-          "naddresses=%u after OOM (expected 0 -- adoption must be reverted)",
+          "naddresses=%u after OOM (expected 0 -- count must be reverted)",
           dns->naddresses);
-    CHECK(dns->addresses == NULL,
-          "addresses non-NULL after OOM (expected NULL -- adoption must be "
-          "reverted)");
+    CHECK(dns->addrs == NULL,
+          "addrs non-NULL after OOM (expected NULL)");
     CHECK(dns->last_resolved == 0,
-          "last_resolved=%" PRId64 " after OOM (expected 0 so the next resolve "
-          "is still 'due' and retries)", dns->last_resolved);
+          "last_resolved=%" PRId64 " after OOM (expected 0 so the next resolve is "
+          "still 'due' and retries)", dns->last_resolved);
 
-    /*
-     * Simulate the next client request / DNS tick: a consumer indexes a parallel
-     * array ONLY when naddresses>0. On the fixed dns naddresses==0, so this is a
-     * safe no-op -- no NULL deref. This is the access that crashes pre-fix.
-     */
-    if (dns->naddresses > 0 && dns->addresses != NULL) {
-        volatile uint32_t sink = dns->latencies[0];   /* must NOT run */
+    if (dns->naddresses > 0 && dns->addrs != NULL) {
+        volatile uint32_t sink = dns->addrs[0].latency;   /* must NOT run */
         (void)sink;
         CHECK(false, "fixed dns wrongly reported naddresses>0 after OOM");
     }
@@ -470,9 +376,9 @@ main(void)
     free_dns(dns);
 
     if (failures == 0) {
-        printf("OK: first-resolution OOM reverts the adoption -> empty, "
-               "self-consistent dns (naddresses=0, addresses=NULL); next access "
-               "is a guarded no-op; next resolve is still due\n");
+        printf("OK: first-resolution OOM reverts the count -> empty, "
+               "self-consistent dns (naddresses=0, addrs=NULL); next access is a "
+               "guarded no-op; next resolve is still due\n");
         return 0;
     }
     fprintf(stderr, "FAILED: %d assertion(s)\n", failures);

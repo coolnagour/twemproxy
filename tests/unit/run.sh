@@ -11,26 +11,28 @@
 # with the prebuilt sub-library archives, so each test drives the REAL
 # nc_server.c code and the real struct string handling.
 #
-# Tests run here:
-#   test_remove_address  -- server_dns_remove_address_at() array-shift alignment
-#                           (fix #2).
-#   test_address_cap     -- the accumulate-append cap at max_addresses (fix #3),
-#                           guarding the lazy parallel arrays against an OOB
-#                           write. Built TWICE:
+# Tests run here (all on the array-of-structs server_dns layout):
+#   test_remove_address  -- server_dns_remove_address_at() single struct shift:
+#                           survivors keep their fields + current_addr_idx fixup.
+#   test_address_cap     -- the accumulate-append cap at max_addresses. Built
+#                           TWICE:
 #                             * default (cap present)  -> must exit 0 (clean).
-#                             * -DTEST_NO_CAP          -> reproduces the pre-fix
-#                               bug (naddresses>16 + OOB lazy-array write);
-#                               must exit non-zero. This is the TDD red->green
-#                               evidence for the fix.
+#                             * -DTEST_NO_CAP          -> reproduces the pre-cap
+#                               bug (naddresses>16); must exit non-zero. This is
+#                               the TDD red->green evidence for the cap.
+#                           (Before the struct-of-arrays -> array-of-structs
+#                           refactor this also guarded a heap OOB write into the
+#                           fixed-size lazy arrays; with one realloc-grown array
+#                           that OOB class is structurally gone, so the FORCE-OOB
+#                           heap-guard demo build was dropped.)
 #
 # Memory safety: ASan is the preferred checker (see the AddressSanitizer build
 # in the task brief). Where the ASan runtime refuses to initialise (some macOS
 # toolchains abort in sanitizer_malloc_mac.inc), this script falls back to the
 # macOS `leaks` tool, which flags leaks and aborts on double-free, OR to
 # libgmalloc when LIBGMALLOC=1 is set (DYLD_INSERT_LIBRARIES=libgmalloc.dylib
-# traps heap OOB read/write/double-free -- meaningful for the fix #3 OOB). On
-# Linux, build with CFLAGS/LDFLAGS=-fsanitize=address and run the binaries
-# directly under ASan instead.
+# traps heap OOB read/write/double-free). On Linux, build with
+# CFLAGS/LDFLAGS=-fsanitize=address and run the binaries directly under ASan.
 #
 # Usage:
 #   bash tests/unit/run.sh                 # plain / leaks (whichever is present)
@@ -197,35 +199,32 @@ run_leaks_must_leak() {
     return 0
 }
 
-# --- fix #2: array-shift alignment -----------------------------------------
+# --- remove: single struct shift -------------------------------------------
 bin_remove="$(build_test test_remove_address "$here/test_remove_address.c")"
 
-# --- fix #3: accumulate cap ------------------------------------------------
-# Three builds from one source via compile flags:
-#   capped   : mirrors the FIXED nc_server.c  -> must exit 0 (clean).
-#   nocap    : mirrors the PRE-fix nc_server.c -> must exit non-zero (the
-#              cap is gone; naddresses runs past 16 and the lazy-array touch
-#              is reported OOB). This is the TDD red.
-#   forceoob : nocap + actually performs the genuine out-of-bounds lazy-array
-#              write. Built and run ONLY under a heap guard (LIBGMALLOC=1 or
-#              ASan), where it traps the corruption with a hard fault. Skipped
-#              on plain runs because a real OOB write smashes the heap.
+# --- accumulate cap --------------------------------------------------------
+# Two builds from one source via compile flags:
+#   capped : mirrors the FIXED nc_server.c  -> must exit 0 (clean).
+#   nocap  : mirrors the PRE-cap nc_server.c -> must exit non-zero (the cap is
+#            gone; naddresses runs past 16, violating the invariant). This is
+#            the TDD red. (The old OOB-into-fixed-lazy-array hazard is gone with
+#            the single realloc-grown array, so there is no FORCE-OOB build.)
 bin_cap="$(build_test test_address_cap "$here/test_address_cap.c")"
 bin_nocap="$(build_test test_address_cap_nocap "$here/test_address_cap.c" -DTEST_NO_CAP)"
 
-# --- fix #4: all-or-nothing realloc in the accumulate-append ----------------
+# --- single-realloc grow safety in the accumulate-append --------------------
 # Two builds from one source. The nc_realloc failure-injection shim is wired in
 # WITHIN the source (an #undef/#define after the headers -- a command-line
 # -Dnc_realloc gets clobbered by nc_util.h's own macro), so no extra flag here:
-#   fixed : mirrors the FIXED write-back (realloc straight into dns->*, goto
-#           nomem on any failure) -> a forced mid-sequence realloc failure
-#           leaves no dangling dns->* and does not bump naddresses -> exit 0,
-#           clean under libgmalloc + leaks.
-#   buggy : -DTEST_REALLOC_BUGGY mirrors the PRE-fix write-back (realloc into
-#           locals, combined check, return-without-write-back) -> the same
-#           forced failure leaves dns->* dangling at freed blocks (UAF) and
-#           leaks the grown blocks. Must exit non-zero; under libgmalloc the
-#           dangling read traps. This is the TDD red.
+#   fixed : mirrors the FIXED write-back (realloc into a temp, write back to
+#           dns->addrs only on success) -> a forced realloc failure leaves
+#           dns->addrs intact and does not bump naddresses -> exit 0, clean
+#           under libgmalloc + leaks.
+#   buggy : -DTEST_REALLOC_BUGGY mirrors the footgun write-back (assign the
+#           realloc result straight back to dns->addrs, check after) -> the same
+#           forced failure clobbers dns->addrs with NULL and leaks the original
+#           block. Must exit non-zero; under libgmalloc the NULL deref traps,
+#           under leaks the orphan is reported. This is the TDD red.
 bin_realloc="$(build_test test_realloc_safety "$here/test_realloc_safety.c")"
 bin_realloc_buggy="$(build_test test_realloc_safety_buggy "$here/test_realloc_safety.c" \
                   -DTEST_REALLOC_BUGGY)"
@@ -273,69 +272,53 @@ bin_dynep_prefix="$(build_test test_dynamic_endpoint_prefix \
 # two tests BELOW cover the prod-hardening round (this file's bug numbers), kept
 # named "prod-hardening #1/#2" so they do not collide with the labels above.
 
-# --- prod-hardening #1: server_dns_init forgets to NULL two pointers ---------
+# --- prod-hardening #1: failed-first-resolve leaves a clean, freeable dns ----
 # Drives the REAL server_dns_init() + REAL server_dns_deinit() on a failed-first-
 # resolve (hostname starts with '/', so the resolver fails offline with zero
 # allocation). Two builds from one source:
-#   fixed : real init (nc_zalloc + NULL inits) leaves last_connected /
-#           request_counts NULL after the failed resolve -> deinit frees nothing
-#           wild -> exit 0, clean under ASan / libgmalloc / leaks.
-#   prefix: -DTEST_PREFIX_NO_NULL_INIT mirrors the PRE-fix init (nc_alloc, the
-#           two NULL inits omitted, struct pre-filled with 0xAB garbage) then
-#           calls the REAL deinit -> deinit nc_free()s two garbage pointers ->
-#           wild free. Asserts the fields are garbage (plain build fails) and the
-#           wild free traps under ASan/libgmalloc. This is the TDD red.
+#   fixed : real init (nc_zalloc) leaves the single owned pointer dns->addrs NULL
+#           after the failed resolve -> deinit frees nothing wild -> exit 0,
+#           clean under ASan / libgmalloc / leaks.
+#   prefix: -DTEST_PREFIX_NO_NULL_INIT mirrors a PRE-fix-style init (nc_alloc,
+#           struct pre-filled with 0xAB garbage, the addrs = NULL init omitted)
+#           then calls the REAL deinit -> deinit nc_free()s a garbage pointer ->
+#           wild free. Asserts addrs is garbage (plain build fails) and the wild
+#           free traps under ASan/libgmalloc. This is the TDD red.
 bin_dnsinit="$(build_test test_dns_init_deinit "$here/test_dns_init_deinit.c")"
 bin_dnsinit_prefix="$(build_test test_dns_init_deinit_prefix \
                   "$here/test_dns_init_deinit.c" -DTEST_PREFIX_NO_NULL_INIT)"
 
 # --- prod-hardening #2: first-resolution OOM leaves an inconsistent dns ------
-# Mirrors the first-resolution adopt + eager-alloc + alloc-failure cleanup of
-# server_dns_resolve() against a REAL struct server_dns, with an nc_alloc
-# failure-injection shim. Two builds from one source:
-#   fixed : the cleanup reverts the adoption -> empty, self-consistent dns
-#           (naddresses==0, addresses==NULL); a simulated next access is a
-#           guarded no-op -> exit 0, clean under ASan / libgmalloc / leaks.
-#   prefix: -DTEST_PREFIX_NO_REVERT mirrors the PRE-fix cleanup (adoption left
-#           published, parallel arrays NULL) -> inconsistent dns; asserts fire
-#           (plain build fails) and indexing a parallel array NULL-derefs (ASan/
-#           libgmalloc trap). This is the TDD red.
+# Mirrors the first-resolution publish-count + single dns_addr-array alloc +
+# alloc-failure cleanup of server_dns_resolve() against a REAL struct server_dns,
+# with an nc_alloc failure-injection shim. Two builds from one source:
+#   fixed : the cleanup reverts the count -> empty, self-consistent dns
+#           (naddresses==0, addrs==NULL); a simulated next access is a guarded
+#           no-op -> exit 0, clean under ASan / libgmalloc / leaks.
+#   prefix: -DTEST_PREFIX_NO_REVERT mirrors the PRE-fix cleanup (count left
+#           published while addrs is NULL) -> inconsistent dns; asserts fire
+#           (plain build fails) and indexing addrs NULL-derefs (ASan/libgmalloc
+#           trap). This is the TDD red.
 bin_dnsoom="$(build_test test_dns_resolve_oom "$here/test_dns_resolve_oom.c")"
 bin_dnsoom_prefix="$(build_test test_dns_resolve_oom_prefix \
                   "$here/test_dns_resolve_oom.c" -DTEST_PREFIX_NO_REVERT)"
 
 echo
 fail=0
-run_test    "$bin_remove" 0 "test_remove_address (fix #2 alignment)"     || fail=1
-run_test    "$bin_cap"    0 "test_address_cap (fix #3 cap, fixed build)" || fail=1
-run_nonzero "$bin_nocap"    "test_address_cap (fix #3, NO-CAP bug reproduction)" || fail=1
-run_test    "$bin_realloc" 0 "test_realloc_safety (fix #4 all-or-nothing + new_hostnames free, fixed build)" || fail=1
-run_nonzero "$bin_realloc_buggy" "test_realloc_safety (fix #4, BUGGY-writeback UAF/leak reproduction)" || fail=1
+run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
+run_test    "$bin_cap"    0 "test_address_cap (cap, fixed build)" || fail=1
+run_nonzero "$bin_nocap"    "test_address_cap (NO-CAP bug reproduction)" || fail=1
+run_test    "$bin_realloc" 0 "test_realloc_safety (single-realloc grow + new_hostnames free, fixed build)" || fail=1
+run_nonzero "$bin_realloc_buggy" "test_realloc_safety (footgun-writeback NULL-clobber/leak reproduction)" || fail=1
 run_leaks_must_leak "$bin_realloc_omit_hn" "test_realloc_safety (new_hostnames error-path leak, OMIT-FREE leak reproduction)" || fail=1
 run_test    "$bin_lifetime" 0 "test_lifetime_quiescent (fix #1 quiescence guard, fixed build)" || fail=1
 run_nonzero "$bin_lifetime_prefix" "test_lifetime_quiescent (fix #1, NO-GUARD bug reproduction)" || fail=1
 run_test    "$bin_dynep" 0 "test_dynamic_endpoint (fix #5 explicit flag, fixed build)" || fail=1
 run_nonzero "$bin_dynep_prefix" "test_dynamic_endpoint (fix #5, -ro AUTO-DETECT footgun reproduction)" || fail=1
-run_test    "$bin_dnsinit" 0 "test_dns_init_deinit (prod-hardening #1 NULL-init, fixed build)" || fail=1
+run_test    "$bin_dnsinit" 0 "test_dns_init_deinit (prod-hardening #1 clean-empty-dns, fixed build)" || fail=1
 run_nonzero "$bin_dnsinit_prefix" "test_dns_init_deinit (prod-hardening #1, NO-NULL-INIT wild-free reproduction)" || fail=1
-run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-adoption, fixed build)" || fail=1
+run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-count, fixed build)" || fail=1
 run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-REVERT inconsistent-dns reproduction)" || fail=1
-
-# Heap-guard demonstration: only meaningful (and only safe) under a guard.
-if [ "${LIBGMALLOC:-0}" = "1" ] && [ -f /usr/lib/libgmalloc.dylib ]; then
-    bin_forceoob="$(build_test test_address_cap_forceoob "$here/test_address_cap.c" \
-                        -DTEST_NO_CAP -DTEST_FORCE_OOB_WRITE)"
-    echo "=== test_address_cap (fix #3, FORCE-OOB heap-guard trap; abort expected) ==="
-    echo "running under libgmalloc (heap OOB guard)"
-    foob_rc=0
-    DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib "$bin_forceoob" >/dev/null 2>&1 || foob_rc=$?
-    if [ "$foob_rc" -gt 128 ]; then
-        echo "RESULT: FORCE-OOB -> died from signal $((foob_rc-128)) -- PASS (libgmalloc trapped the heap OOB write)"
-    else
-        echo "RESULT: FORCE-OOB -> rc=$foob_rc (no heap-guard trap) -- FAIL" >&2
-        fail=1
-    fi
-fi
 
 echo
 if [ "$fail" -ne 0 ]; then
