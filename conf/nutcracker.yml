@@ -37,6 +37,14 @@ pools:
         zone_weight: 99             # 99% preference for same-AZ servers
         dns_resolve_interval: 30    # Re-check DNS every 30 seconds
 
+        # Opt in to dynamic DNS discovery for this read pool. This turns the
+        # single endpoint below into a self-discovering set of replica
+        # addresses with latency/zone routing. It is REQUIRED for zone_aware
+        # to have multiple addresses to route between. Never set this on a
+        # write/primary pool - dynamic discovery there could route writes to a
+        # demoted replica after a failover.
+        dynamic_endpoint: true
+
         # Read replica endpoint (automatically discovers all replicas)
         servers:
             - my-redis-ro.cache.amazonaws.com:6379:1

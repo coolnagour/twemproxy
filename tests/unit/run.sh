@@ -254,6 +254,21 @@ bin_lifetime="$(build_test test_lifetime_quiescent "$here/test_lifetime_quiescen
 bin_lifetime_prefix="$(build_test test_lifetime_quiescent_prefix \
                   "$here/test_lifetime_quiescent.c" -DTEST_PREFIX_NO_QUIESCENCE_GUARD)"
 
+# --- fix #5: explicit dynamic_endpoint flag (drop -ro hostname auto-detect) -
+# Two builds from one source:
+#   fixed : drives the REAL conf_pool_servers_are_dynamic() from nc_conf.c --
+#           is_dynamic is decided solely by the explicit dynamic_endpoint flag,
+#           never the hostname -> a -ro host WITHOUT the flag stays static
+#           (anti-footgun) -> exit 0.
+#   prefix: -DTEST_PREFIX_RO_AUTODETECT swaps in a faithful mirror of the
+#           PRE-fix decision (is_dynamic inferred from a "-ro" substring in the
+#           hostname, flag ignored) -> the -ro-host-without-flag case is
+#           (wrongly) reported dynamic, so the anti-footgun assertion fails ->
+#           non-zero exit. This is the TDD red.
+bin_dynep="$(build_test test_dynamic_endpoint "$here/test_dynamic_endpoint.c")"
+bin_dynep_prefix="$(build_test test_dynamic_endpoint_prefix \
+                  "$here/test_dynamic_endpoint.c" -DTEST_PREFIX_RO_AUTODETECT)"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (fix #2 alignment)"     || fail=1
@@ -264,6 +279,8 @@ run_nonzero "$bin_realloc_buggy" "test_realloc_safety (fix #4, BUGGY-writeback U
 run_leaks_must_leak "$bin_realloc_omit_hn" "test_realloc_safety (new_hostnames error-path leak, OMIT-FREE leak reproduction)" || fail=1
 run_test    "$bin_lifetime" 0 "test_lifetime_quiescent (fix #1 quiescence guard, fixed build)" || fail=1
 run_nonzero "$bin_lifetime_prefix" "test_lifetime_quiescent (fix #1, NO-GUARD bug reproduction)" || fail=1
+run_test    "$bin_dynep" 0 "test_dynamic_endpoint (fix #5 explicit flag, fixed build)" || fail=1
+run_nonzero "$bin_dynep_prefix" "test_dynamic_endpoint (fix #5, -ro AUTO-DETECT footgun reproduction)" || fail=1
 
 # Heap-guard demonstration: only meaningful (and only safe) under a guard.
 if [ "${LIBGMALLOC:-0}" = "1" ] && [ -f /usr/lib/libgmalloc.dylib ]; then

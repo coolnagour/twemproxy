@@ -66,6 +66,7 @@
 
 /* Cloud-agnostic defaults */
 #define CONF_DEFAULT_ZONE_AWARE              false
+#define CONF_DEFAULT_DYNAMIC_ENDPOINT        false
 #define CONF_DEFAULT_ZONE_WEIGHT             25         /* extra weight for same-zone servers */
 #define CONF_DEFAULT_CONNECTION_POOLING      false
 #define CONF_DEFAULT_CONNECTION_WARMING      0
@@ -123,6 +124,7 @@ struct conf_pool {
     
     /* Cloud-agnostic configuration */
     int                zone_aware;            /* zone_aware: enable zone-aware routing */
+    int                dynamic_endpoint;      /* dynamic_endpoint: opt in to dynamic DNS accumulation + zone routing for this pool's servers */
     int                zone_weight;           /* zone_weight: extra weight for same-zone servers */
     int                connection_pooling;    /* connection_pooling: enable connection pooling */
     int                connection_warming;    /* connection_warming: pre-warm connections count */
@@ -190,6 +192,16 @@ char *conf_set_master(struct conf *cf, struct command *cmd, void *conf);
 
 rstatus_t conf_server_each_transform(void *elem, void *data);
 rstatus_t conf_pool_each_transform(void *elem, void *data);
+
+/*
+ * Decide whether the servers of a pool use dynamic DNS accumulation + zone
+ * routing (is_dynamic). Driven solely by the pool's explicit dynamic_endpoint
+ * directive -- NOT inferred from the server hostname. Exposed so the unit test
+ * can drive the real decision. addrstr is unused by the real logic; it is kept
+ * in the signature so the pre-fix -ro-substring behaviour can be mirrored in
+ * the test's red build against the same inputs.
+ */
+bool conf_pool_servers_are_dynamic(int dynamic_endpoint, struct string *addrstr);
 
 struct conf *conf_create(char *filename);
 void conf_destroy(struct conf *cf);

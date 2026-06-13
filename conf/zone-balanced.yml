@@ -21,6 +21,10 @@ pools:
 
         # Balanced zone-aware routing
         zone_aware: true
+        # Opt in to dynamic DNS discovery: expands the single endpoint into all
+        # backing addresses so zone_aware has a set to route across. Only safe
+        # on read/replica pools - never on a write/primary endpoint.
+        dynamic_endpoint: true
         zone_weight: 70             # 70% same-AZ, 30% distributed
         dns_resolve_interval: 15    # More frequent DNS checks
 
@@ -44,6 +48,9 @@ pools:
 
         # High same-AZ preference for sessions
         zone_aware: true
+        # Opt in to dynamic DNS discovery (read/replica pool). See the note on
+        # the redis_primary pool above - never set this on a write endpoint.
+        dynamic_endpoint: true
         zone_weight: 90             # 90% same-AZ for session locality
         dns_resolve_interval: 60
 

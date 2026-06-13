@@ -128,6 +128,10 @@ static struct command conf_pool_commands[] = {
       conf_set_bool,
       offsetof(struct conf_pool, zone_aware) },
 
+    { string("dynamic_endpoint"),
+      conf_set_bool,
+      offsetof(struct conf_pool, dynamic_endpoint) },
+
     { string("zone_weight"),
       conf_set_num,
       offsetof(struct conf_pool, zone_weight) },
@@ -245,13 +249,36 @@ conf_server_deinit(struct conf_server *cs)
     log_debug(LOG_VVERB, "deinit conf server %p", cs);
 }
 
+/*
+ * Decide whether a pool's servers run in dynamic mode (dynamic DNS address
+ * accumulation + latency/zone routing). This is now an EXPLICIT opt-in via the
+ * pool's dynamic_endpoint directive.
+ *
+ * History: this used to be inferred from the server hostname containing the
+ * substring "-ro". That was a footgun -- any pool whose endpoint hostname
+ * merely contained "ro" (e.g. a primary "...prod-rw..." host, or any host with
+ * "ro" in it) was silently turned into a latency-routed accumulator. For a
+ * WRITE pool that meant an ElastiCache failover could route writes to a demoted
+ * read replica for minutes. The substring trigger is gone; dynamic mode is now
+ * opt-in only.
+ *
+ * addrstr is intentionally unused -- the decision no longer depends on the
+ * hostname. It is kept in the signature so the unit test can mirror the old
+ * -ro behaviour against the same inputs in its red build.
+ */
+bool
+conf_pool_servers_are_dynamic(int dynamic_endpoint, struct string *addrstr)
+{
+    (void)addrstr;
+    return dynamic_endpoint != CONF_UNSET_NUM && dynamic_endpoint != 0;
+}
+
 rstatus_t
 conf_server_each_transform(void *elem, void *data)
 {
     struct conf_server *cs = elem;
     struct array *server = data;
     struct server *s;
-    rstatus_t status;
 
     ASSERT(cs->valid);
 
@@ -275,40 +302,18 @@ conf_server_each_transform(void *elem, void *data)
     s->next_retry = 0LL;
     s->failure_count = 0;
     
-    /* Initialize dynamic DNS fields */
+    /*
+     * Initialize dynamic DNS fields. Whether this server actually runs in
+     * dynamic mode (is_dynamic + server_dns_init) is decided per-pool in
+     * conf_pool_each_transform, where the pool's dynamic_endpoint directive is
+     * in scope. Default to the safe static mode here.
+     */
     s->dns = NULL;
     s->current_addr_idx = 0;
-    
-    /* Check if this is a dynamic DNS server (contains -ro in hostname) */
     s->is_dynamic = 0;
-    if (s->addrstr.len > 3) {
-        char *hostname = nc_alloc(s->addrstr.len + 1);
-        if (hostname != NULL) {
-            nc_memcpy(hostname, s->addrstr.data, s->addrstr.len);
-            hostname[s->addrstr.len] = '\0';
-            
-            if (strstr(hostname, "-ro") != NULL) {
-                s->is_dynamic = 1;
-                
-                /* Initialize dynamic DNS for read-only endpoints */
-                status = server_dns_init(s);
-                if (status != NC_OK) {
-                    log_warn("failed to initialize dynamic DNS for server '%.*s'",
-                             s->pname.len, s->pname.data);
-                    s->is_dynamic = 0;
-                } else {
-                    log_warn("enabled dynamic DNS for server '%.*s'",
-                              s->pname.len, s->pname.data);
-                }
-            }
-            
-            nc_free(hostname);
-        }
-    }
 
-    log_debug(LOG_VERB, "transform to server %"PRIu32" '%.*s' (dynamic: %s)",
-              s->idx, s->pname.len, s->pname.data, 
-              s->is_dynamic ? "yes" : "no");
+    log_debug(LOG_VERB, "transform to server %"PRIu32" '%.*s'",
+              s->idx, s->pname.len, s->pname.data);
 
     return NC_OK;
 }
@@ -348,6 +353,7 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     
     /* Cloud-agnostic initialization */
     cp->zone_aware = CONF_UNSET_NUM;
+    cp->dynamic_endpoint = CONF_UNSET_NUM;
     cp->zone_weight = CONF_UNSET_NUM;
     cp->connection_pooling = CONF_UNSET_NUM;
     cp->connection_warming = CONF_UNSET_NUM;
@@ -407,6 +413,46 @@ conf_pool_deinit(struct conf_pool *cp)
     array_deinit(&cp->server);
 
     log_debug(LOG_VVERB, "deinit conf pool %p", cp);
+}
+
+/*
+ * Apply the pool's dynamic_endpoint decision to a transformed server array.
+ * For a dynamic_endpoint pool, mark every server is_dynamic and bring up its
+ * dynamic DNS (accumulation + zone routing). server_dns_init reads
+ * server->owner, so this MUST run after server_init has set the owners.
+ *
+ * If server_dns_init fails for a server we log and fall back to static mode
+ * for that server (is_dynamic=0) rather than aborting the whole config -- the
+ * server still works as a plain endpoint, mirroring the previous behaviour.
+ */
+static void
+conf_pool_apply_dynamic(struct conf_pool *cp, struct array *server)
+{
+    uint32_t i, nserver;
+    struct server *s;
+    rstatus_t status;
+
+    nserver = array_n(server);
+    for (i = 0; i < nserver; i++) {
+        s = array_get(server, i);
+
+        if (!conf_pool_servers_are_dynamic(cp->dynamic_endpoint, &s->addrstr)) {
+            s->is_dynamic = 0;
+            continue;
+        }
+
+        s->is_dynamic = 1;
+        status = server_dns_init(s);
+        if (status != NC_OK) {
+            log_warn("failed to initialize dynamic DNS for server '%.*s'",
+                     s->pname.len, s->pname.data);
+            s->is_dynamic = 0;
+        } else {
+            log_debug(LOG_VERB, "enabled dynamic DNS for server '%.*s' "
+                      "(pool '%.*s' dynamic_endpoint)",
+                      s->pname.len, s->pname.data, cp->name.len, cp->name.data);
+        }
+    }
 }
 
 rstatus_t
@@ -492,11 +538,18 @@ conf_pool_each_transform(void *elem, void *data)
     if (status != NC_OK) {
         return status;
     }
+    /*
+     * Decide dynamic mode (is_dynamic + dynamic DNS) for this pool's servers
+     * from the explicit dynamic_endpoint directive. Must run after server_init
+     * so the servers exist and their owner pool is set.
+     */
+    conf_pool_apply_dynamic(cp, &sp->server);
     if (array_n(&cp->redis_master) > 0) {
         status = server_init(&sp->redis_master, &cp->redis_master, sp);
         if (status != NC_OK) {
             return status;
         }
+        conf_pool_apply_dynamic(cp, &sp->redis_master);
         //append redis master metrics to server metrics array
         for (i = 0; i < array_n(&sp->redis_master); i++) {
             s = array_get(&sp->redis_master, i);
@@ -1641,6 +1694,10 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
     /* Cloud-agnostic defaults */
     if (cp->zone_aware == CONF_UNSET_NUM) {
         cp->zone_aware = CONF_DEFAULT_ZONE_AWARE;
+    }
+
+    if (cp->dynamic_endpoint == CONF_UNSET_NUM) {
+        cp->dynamic_endpoint = CONF_DEFAULT_DYNAMIC_ENDPOINT;
     }
 
     if (cp->zone_weight == CONF_UNSET_NUM) {
