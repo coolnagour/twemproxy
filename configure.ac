@@ -24,6 +24,14 @@ AC_DEFINE(NC_VERSION_STRING, "NC_MAJOR.NC_MINOR.NC_PATCH", [Define the version s
 # Checks for language
 AC_LANG([C])
 
+# Remember whether the user passed CFLAGS / LDFLAGS on the command line BEFORE
+# AC_PROG_CC runs. AC_PROG_CC fills in a default CFLAGS ("-g -O2" for gcc) when
+# the variable is unset, so we must capture "was it set by the user?" first.
+# Later (after the --enable-debug handling) we use these to decide whether to
+# install our optimized+hardened defaults or leave the user's flags untouched.
+nc_user_cflags=${CFLAGS+set}
+nc_user_ldflags=${LDFLAGS+set}
+
 # Checks for programs
 AC_PROG_AWK
 AC_PROG_CC
@@ -182,6 +190,33 @@ AS_CASE([x$enable_debug],
   [xno], [],
   [AC_MSG_FAILURE([invalid value ${enable_debug} for --enable-debug])])
 AC_MSG_RESULT($enable_debug)
+
+# Default build flags: optimized + hardened (release) or unoptimized + full
+# debug info (--enable-debug). We only install these when the user did NOT pass
+# their own CFLAGS / LDFLAGS -- an explicit CFLAGS="..." (e.g. the ASan harness
+# that passes -fsanitize=address) always wins and is left completely untouched.
+#
+# Why: a plain `./configure && make` with no CFLAGS otherwise inherits whatever
+# AC_PROG_CC guessed (and a non-gcc compiler may guess nothing -> -O0). This is
+# a parser-heavy proxy; shipping it unoptimized is a real throughput loss. The
+# hardening flags (_FORTIFY_SOURCE, stack-protector, PIE, full RELRO) are the
+# standard distro mitigation set and cost effectively nothing at runtime.
+AC_MSG_CHECKING([which default CFLAGS/LDFLAGS to install])
+AS_IF([test "x$nc_user_cflags" = xset],
+  [AC_MSG_RESULT([user-supplied CFLAGS, left untouched])],
+  [AS_IF([test "x$enable_debug" != xno],
+     [CFLAGS="-O0 -ggdb3"
+      AC_MSG_RESULT([debug: $CFLAGS])],
+     [dnl Release: -U_FORTIFY_SOURCE first so re-defining it never warns on
+      dnl distros whose specs predefine it. _FORTIFY_SOURCE needs -O>0 (-O2 here).
+      CFLAGS="-O2 -g -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE"
+      AC_MSG_RESULT([release hardened: $CFLAGS])])])
+
+# Hardened link flags (PIE + full RELRO) belong on the link line, and only for a
+# release build that we are also hardening at compile time. Skipped when the user
+# supplied LDFLAGS (e.g. ASan: -fsanitize=address) or for a debug build.
+AS_IF([test "x$nc_user_ldflags" != xset && test "x$nc_user_cflags" != xset && test "x$enable_debug" = xno],
+  [LDFLAGS="$LDFLAGS -fPIE -pie -Wl,-z,relro,-z,now"])
 
 AC_MSG_CHECKING([whether to disable stats])
 AC_ARG_ENABLE([stats],
