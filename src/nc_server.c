@@ -1770,6 +1770,135 @@ server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
     return idxs[count - 1];
 }
 
+/*
+ * Effective latency of address i: the measured EWMA latency plus, for a replica
+ * NOT in this host's zone, the configurable cross-AZ surcharge (a latency-
+ * equivalent cost penalty). surcharge_us==0 means pure latency (AZ-agnostic).
+ * Saturates at UINT32_MAX so a huge surcharge cannot wrap a small latency.
+ */
+uint32_t
+server_addr_eff_latency(const struct server_dns *dns, uint32_t i,
+                        uint32_t surcharge_us)
+{
+    uint64_t eff;
+    bool cross_az;
+
+    ASSERT(dns != NULL);
+    ASSERT(i < dns->naddresses);
+
+    cross_az = (dns->addrs[i].zone_id != dns->local_zone_id);
+    eff = (uint64_t)dns->addrs[i].latency + (cross_az ? (uint64_t)surcharge_us : 0);
+
+    return (eff > UINT32_MAX) ? UINT32_MAX : (uint32_t)eff;
+}
+
+/*
+ * Build the "good-latency band": from the healthy addresses and their effective
+ * latencies, keep the ones competitive with the fastest -- those whose
+ * eff_latency is within band_factor * min(eff_latency). Output is sorted ascending
+ * by eff_latency and truncated to max_count, so the lowest-latency replicas are
+ * the ones kept when capped. This is the set we open connections to and weight
+ * over (Task 3); the far/slow replicas drop out entirely.
+ *
+ * Allocation-free: writes into caller-provided out_idxs[] (and out_eff_latency[],
+ * which may be NULL). eff_latency[k] is the effective latency of healthy_idxs[k].
+ * Integer-only; the band threshold is computed in uint64 so band_factor*min
+ * cannot overflow. Returns the number of entries written.
+ *
+ * The selection set is bounded by the per-server address cap, so a tiny
+ * insertion sort is cheaper than a qsort callback and needs no heap. A local
+ * scratch array holds each placed slot's effective latency (so the sort is
+ * correct even when the caller passes out_eff_latency == NULL).
+ */
+uint32_t
+server_build_good_set(const uint32_t *healthy_idxs, const uint32_t *eff_latency,
+                      uint32_t healthy_count, uint32_t band_factor,
+                      uint32_t max_count, uint32_t *out_idxs,
+                      uint32_t *out_eff_latency)
+{
+    uint32_t placed_eff[MAX_ADDRESSES_PER_SERVER];
+    uint32_t i, n = 0;
+    uint32_t min_eff = UINT32_MAX;
+    uint64_t threshold;
+
+    if (healthy_count == 0 || out_idxs == NULL) {
+        return 0;
+    }
+    ASSERT(eff_latency != NULL);
+    /*
+     * healthy_count is a subset of dns->naddresses, which is capped at
+     * MAX_ADDRESSES_PER_SERVER. Guard anyway so a future caller cannot overrun
+     * the scratch array.
+     */
+    if (healthy_count > MAX_ADDRESSES_PER_SERVER) {
+        healthy_count = MAX_ADDRESSES_PER_SERVER;
+    }
+
+    /* Pass 1: the fastest effective latency in the healthy set. */
+    for (i = 0; i < healthy_count; i++) {
+        if (eff_latency[i] < min_eff) {
+            min_eff = eff_latency[i];
+        }
+    }
+
+    /*
+     * band_factor 0 would exclude everything; treat it as "no banding" (keep all
+     * healthy) so a misconfig can never empty the read set. Normal values are >=1.
+     */
+    if (band_factor == 0) {
+        threshold = UINT32_MAX;
+    } else {
+        threshold = (uint64_t)band_factor * (uint64_t)min_eff;
+    }
+
+    /*
+     * Pass 2: collect the in-band members, keeping them sorted ascending by
+     * eff_latency via insertion (>= comparison -> stable on ties, preserving
+     * input order). The cap is applied AFTER sorting so a faster member is never
+     * dropped in favour of a slower one already placed.
+     */
+    for (i = 0; i < healthy_count; i++) {
+        uint32_t e, idx, pos, j;
+
+        if ((uint64_t)eff_latency[i] > threshold) {
+            continue;   /* out of the good band */
+        }
+
+        e = eff_latency[i];
+        idx = healthy_idxs[i];
+
+        /* Insertion point: first placed slot whose eff is strictly larger. */
+        for (pos = 0; pos < n; pos++) {
+            if (placed_eff[pos] > e) {
+                break;
+            }
+        }
+
+        /* Shift the tail up by one to open slot `pos`. */
+        for (j = n; j > pos; j--) {
+            out_idxs[j] = out_idxs[j - 1];
+            placed_eff[j] = placed_eff[j - 1];
+            if (out_eff_latency != NULL) {
+                out_eff_latency[j] = out_eff_latency[j - 1];
+            }
+        }
+
+        out_idxs[pos] = idx;
+        placed_eff[pos] = e;
+        if (out_eff_latency != NULL) {
+            out_eff_latency[pos] = e;
+        }
+        n++;
+    }
+
+    /* Apply the cap: keep the lowest-eff members (already at the front). */
+    if (max_count > 0 && n > max_count) {
+        n = max_count;
+    }
+
+    return n;
+}
+
 uint32_t
 server_select_best_address(struct server *server)
 {

@@ -233,6 +233,31 @@ uint32_t server_select_best_address(struct server *server);
  */
 uint32_t server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
                               uint32_t count);
+
+/*
+ * server_addr_eff_latency: effective latency of address i, in usec:
+ *   dns->addrs[i].latency + (cross_az ? surcharge_us : 0)
+ * where cross_az = (dns->addrs[i].zone_id != dns->local_zone_id). surcharge_us is
+ * the cross_az_surcharge_us cost dial (config wiring lands in a later task); pass
+ * 0 for pure latency. Saturates at UINT32_MAX rather than wrapping.
+ *
+ * server_build_good_set: from healthy_idxs[0..healthy_count) and their parallel
+ * eff_latency[] (eff_latency[k] is the effective latency of healthy_idxs[k]),
+ * write to out_idxs[] the subset whose eff_latency <= band_factor*min_eff_latency,
+ * SORTED ASCENDING by eff_latency and capped at max_count (so the lowest-eff
+ * members are kept first). out_eff_latency[] (may be NULL) receives the matching
+ * effective latencies in the same order, for a caller that then weights by them.
+ * Both output buffers are caller-provided and must hold at least
+ * min(healthy_count, max_count) entries. Allocation-free, integer-only. Returns
+ * the number of entries written.
+ */
+uint32_t server_addr_eff_latency(const struct server_dns *dns, uint32_t i,
+                                 uint32_t surcharge_us);
+uint32_t server_build_good_set(const uint32_t *healthy_idxs,
+                               const uint32_t *eff_latency,
+                               uint32_t healthy_count, uint32_t band_factor,
+                               uint32_t max_count, uint32_t *out_idxs,
+                               uint32_t *out_eff_latency);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size);

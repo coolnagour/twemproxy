@@ -155,8 +155,20 @@ run_test() {
         echo "running under valgrind"
         valgrind --error-exitcode=99 --leak-check=full "$bin" || rc=$?
     elif command -v leaks >/dev/null 2>&1; then
-        echo "running under macOS leaks (--atExit)"
-        MallocStackLogging=1 leaks --atExit -- "$bin" || rc=$?
+        # `leaks --atExit -- BIN` reports leaks via ITS OWN exit code and
+        # DISCARDS the wrapped binary's exit code -- so a failed assertion in a
+        # no-leak test (e.g. the pure picker/good-band tests) would be masked as
+        # rc=0. Run the binary DIRECTLY to capture its real exit code, THEN run
+        # leaks purely for leak detection; a leak escalates an otherwise-clean
+        # run to a non-zero rc.
+        echo "running under macOS leaks (direct rc + leak scan)"
+        "$bin" || rc=$?
+        local leak_rc=0
+        MallocStackLogging=1 leaks --atExit -- "$bin" >/dev/null 2>&1 || leak_rc=$?
+        if [ "$rc" -eq 0 ] && [ "$leak_rc" -ne 0 ]; then
+            echo "leaks reported a leak (leaks rc=$leak_rc) on an otherwise-clean run" >&2
+            rc=$leak_rc
+        fi
     else
         echo "running plain (no memory checker available)"
         "$bin" || rc=$?
@@ -366,6 +378,16 @@ fi
 # and a far/slow replica keeps a tiny nonzero share. Single fixed build.
 bin_weightedpick="$(build_test test_weighted_pick "$here/test_weighted_pick.c")"
 
+# --- latency-weighted reads #2: effective-latency + good-latency band -------
+# Drives the REAL server_addr_eff_latency() + server_build_good_set() from
+# nc_server.c against a hand-built struct server_dns (no network). Asserts the
+# cross-AZ surcharge shifts effective latency, the good set keeps replicas within
+# band_factor*min and drops the far one, the output is sorted ascending by
+# effective latency, and the max_count cap keeps the lowest-eff members. Both
+# helpers are allocation-free (caller buffers) so the leaks run finds nothing.
+# Single fixed build.
+bin_goodband="$(build_test test_good_band "$here/test_good_band.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -384,6 +406,7 @@ run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-coun
 run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-REVERT inconsistent-dns reproduction)" || fail=1
 run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware stats classify+format)" || fail=1
 run_test    "$bin_weightedpick" 0 "test_weighted_pick (latency-weighted reads #1 pure weighted picker)" || fail=1
+run_test    "$bin_goodband" 0 "test_good_band (latency-weighted reads #2 eff-latency + good-latency band)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else
