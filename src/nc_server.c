@@ -1710,6 +1710,66 @@ server_dns_check_update(struct server *server)
 }
 
 
+/*
+ * Pick one of idxs[0..count) weighted by inverse effective latency.
+ *
+ * weight_k = WEIGHT_SCALE / (eff_latency[k] + LATENCY_FLOOR_US)
+ *
+ * Lower effective latency -> larger weight -> larger probability of being
+ * chosen. Pure integer math, no heap, no floats; suitable for the hot selection
+ * path. random() is the process-seeded PRNG (seeded once in nc_pre_run(),
+ * src/nc.c) -- we read it but never seed it, so callers/tests own the seed.
+ *
+ * Two passes over the small idxs[] array (one per connection select, count is
+ * bounded by max_server_connections), so the cost is trivial:
+ *   pass 1: total = sum of weights (uint64 to avoid overflow on big counts).
+ *           total==0 only if every weight floored to 0 (astronomically large
+ *           eff_latency); fall back to a uniform pick so we never divide by 0.
+ *   pass 2: draw r in [0,total), walk the cumulative sum, return the first idx
+ *           whose running total exceeds r.
+ *
+ * count==0 returns 0 (there is no valid index; matches the "return 0" guard the
+ * callers already use for an empty address set).
+ */
+uint32_t
+server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
+                     uint32_t count)
+{
+    uint64_t total = 0;
+    uint64_t r, acc;
+    uint32_t k;
+
+    if (count == 0) {
+        return 0;
+    }
+
+    /* Pass 1: accumulate total weight. */
+    for (k = 0; k < count; k++) {
+        total += (uint64_t)WEIGHT_SCALE / ((uint64_t)eff_latency[k] + LATENCY_FLOOR_US);
+    }
+
+    /* Degenerate guard: every weight floored to 0 -> uniform fallback. */
+    if (total == 0) {
+        return idxs[(uint32_t)random() % count];
+    }
+
+    /* Pass 2: weighted draw. r in [0, total). */
+    r = (uint64_t)random() % total;
+    acc = 0;
+    for (k = 0; k < count; k++) {
+        acc += (uint64_t)WEIGHT_SCALE / ((uint64_t)eff_latency[k] + LATENCY_FLOOR_US);
+        if (r < acc) {
+            return idxs[k];
+        }
+    }
+
+    /*
+     * Unreachable in exact arithmetic (acc ends == total > r), but guard against
+     * any rounding edge by returning the last element.
+     */
+    return idxs[count - 1];
+}
+
 uint32_t
 server_select_best_address(struct server *server)
 {

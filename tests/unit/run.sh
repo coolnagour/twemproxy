@@ -357,6 +357,15 @@ if [ "$wrap_supported" = "yes" ]; then
         -Wl,--wrap=getaddrinfo -Wl,--wrap=freeaddrinfo -Wl,--wrap=nc_usec_now)"
 fi
 
+# --- latency-weighted reads #1: pure weighted picker -----------------------
+# Drives the REAL server_weighted_pick() from nc_server.c -- a pure, allocation-
+# free, integer-only latency-weighted selector. No DNS/network dependency, so no
+# pre-fix mirror variant: this is straight-line probabilistic logic. The test
+# seeds srandom(1) itself for reproducible draw counts and asserts the share
+# split matches inverse-eff-latency weights, a single replica is always chosen,
+# and a far/slow replica keeps a tiny nonzero share. Single fixed build.
+bin_weightedpick="$(build_test test_weighted_pick "$here/test_weighted_pick.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -374,6 +383,7 @@ run_nonzero "$bin_dnsinit_prefix" "test_dns_init_deinit (prod-hardening #1, NO-N
 run_test    "$bin_dnsoom" 0 "test_dns_resolve_oom (prod-hardening #2 revert-count, fixed build)" || fail=1
 run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-REVERT inconsistent-dns reproduction)" || fail=1
 run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware stats classify+format)" || fail=1
+run_test    "$bin_weightedpick" 0 "test_weighted_pick (latency-weighted reads #1 pure weighted picker)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else

@@ -75,6 +75,35 @@
 #define CONF_DEFAULT_DYNAMIC_SERVER_CONNECTIONS false    /* disabled by default */
 #define CONF_DEFAULT_MAX_SERVER_CONNECTIONS     10       /* maximum server connections limit */
 
+/*
+ * Latency-weighted read selection (see
+ * docs/superpowers/specs/2026-06-15-twemproxy-latency-weighted-reads-design.md).
+ *
+ * Reads are spread across replicas with probability proportional to
+ *   weight_i = WEIGHT_SCALE / (eff_latency_i + LATENCY_FLOOR_US)
+ * where eff_latency_i = ewma_latency_i + (cross_az ? cross_az_surcharge_us : 0).
+ * All integer math, no floats.
+ *
+ *   WEIGHT_SCALE     numerator that turns a latency (usec) into a comparable
+ *                    integer weight; large enough that even a 10ms replica keeps
+ *                    a nonzero weight (1e6/10050 ~= 99).
+ *   LATENCY_FLOOR_US damps measurement noise and bounds the fastest/slowest
+ *                    ratio, so a slightly-slower replica still keeps a meaningful
+ *                    share instead of being swamped by a near-zero reading.
+ */
+#define WEIGHT_SCALE                            1000000u
+#define LATENCY_FLOOR_US                        50u
+
+/*
+ * cross_az_surcharge_us: a latency-equivalent penalty (usec) added to replicas
+ * NOT in this host's zone, to bias toward same-AZ for data-transfer cost.
+ * Default 0 == pure latency (AZ-agnostic). latency_band_factor: a replica is in
+ * the "good set" iff eff_latency <= band_factor * min_eff_latency; 3 == "use as
+ * many replicas as have good latency", the far-AZ one drops out.
+ */
+#define CONF_DEFAULT_CROSS_AZ_SURCHARGE_US      0u
+#define CONF_DEFAULT_LATENCY_BAND_FACTOR        3u
+
 struct conf_listen {
     struct string   pname;   /* listen: as "hostname:port" */
     struct string   name;    /* hostname:port */

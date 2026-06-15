@@ -219,6 +219,20 @@ rstatus_t server_dns_resolve(struct server *server);
 rstatus_t server_dns_check_update(struct server *server);
 void server_dns_remove_address_at(struct server_dns *dns, uint32_t i);
 uint32_t server_select_best_address(struct server *server);
+
+/*
+ * Latency-weighted read selection helpers (pure, allocation-free, integer-only).
+ * Exposed (non-static) so the unit tests drive the REAL production code.
+ *
+ * server_weighted_pick: return one element of idxs[0..count) with probability
+ *   proportional to 1/(eff_latency[k] + LATENCY_FLOOR_US), where eff_latency[k]
+ *   is the effective latency of idxs[k]. Two passes, uint64 accumulator, integer
+ *   math, no heap, no floats. Uses random() (the process-seeded PRNG) -- does NOT
+ *   seed it. count==0 returns 0 (no valid index). If every weight is 0, falls
+ *   back to a uniform pick.
+ */
+uint32_t server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
+                              uint32_t count);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size);
