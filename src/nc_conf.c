@@ -136,6 +136,14 @@ static struct command conf_pool_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, zone_weight) },
 
+    { string("cross_az_surcharge_us"),
+      conf_set_num,
+      offsetof(struct conf_pool, cross_az_surcharge_us) },
+
+    { string("latency_band_factor"),
+      conf_set_num,
+      offsetof(struct conf_pool, latency_band_factor) },
+
     { string("connection_max_lifetime"),
       conf_set_num,
       offsetof(struct conf_pool, connection_max_lifetime) },
@@ -329,6 +337,8 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
     cp->zone_aware = CONF_UNSET_NUM;
     cp->dynamic_endpoint = CONF_UNSET_NUM;
     cp->zone_weight = CONF_UNSET_NUM;
+    cp->cross_az_surcharge_us = CONF_UNSET_NUM;
+    cp->latency_band_factor = CONF_UNSET_NUM;
     cp->connection_max_lifetime = CONF_UNSET_NUM;
     cp->dns_failure_threshold = CONF_UNSET_NUM;
     cp->dns_expiration_minutes = CONF_UNSET_NUM;
@@ -498,11 +508,11 @@ conf_pool_each_transform(void *elem, void *data)
     /* Cloud-agnostic configuration */
     sp->zone_aware = cp->zone_aware ? 1 : 0;
     sp->zone_weight = (uint32_t)cp->zone_weight;
-    /* Latency-weighted read selection knobs. Config PARSING of these directives
-     * lands in a later task; until then every pool takes the defaults so the
-     * unified selection tail has sane values (pure latency, band factor 3). */
-    sp->cross_az_surcharge_us = CONF_DEFAULT_CROSS_AZ_SURCHARGE_US;
-    sp->latency_band_factor = CONF_DEFAULT_LATENCY_BAND_FACTOR;
+    /* Latency-weighted read selection knobs. conf_validate_pool has already
+     * finalised these to the configured value or the CONF_DEFAULT_*, so copy
+     * straight across (pure latency / band factor 3 by default). */
+    sp->cross_az_surcharge_us = (uint32_t)cp->cross_az_surcharge_us;
+    sp->latency_band_factor = (uint32_t)cp->latency_band_factor;
     sp->connection_max_lifetime = (int64_t)cp->connection_max_lifetime * 1000000LL; /* convert to microseconds */
     sp->dns_failure_threshold = (uint32_t)cp->dns_failure_threshold;
     sp->dns_expiration_minutes = (int64_t)cp->dns_expiration_minutes * 60000000LL; /* convert to microseconds */
@@ -1700,9 +1710,49 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
 
     if (cp->zone_weight == CONF_UNSET_NUM) {
         cp->zone_weight = CONF_DEFAULT_ZONE_WEIGHT;
-    } else if (cp->zone_weight > 100) {
-        log_error("conf: directive \"zone_weight:\" must be between 0 and 100");
-        return NC_ERROR;
+    } else {
+        /*
+         * zone_weight is DEPRECATED. The old behaviour was a rigid
+         * zone_weight%-same-AZ / remainder split; the read pool now distributes
+         * reads by measured latency (weight = 1/eff_latency over a good-latency
+         * band), with cross_az_surcharge_us as the optional same-AZ cost dial.
+         * zone_weight no longer influences selection at all. We keep PARSING it
+         * so existing configs still load, but warn ONCE per process so the
+         * operator migrates. (Bounded by a static guard rather than per-pool, so
+         * a config with several pools setting it does not spam the log.)
+         */
+        static bool zone_weight_deprecation_logged = false;
+        if (!zone_weight_deprecation_logged) {
+            log_warn("conf: directive \"zone_weight:\" is deprecated and no "
+                     "longer affects read distribution; reads are now weighted "
+                     "by measured latency. Remove it; use "
+                     "\"cross_az_surcharge_us:\" for a same-AZ cost lean and "
+                     "\"latency_band_factor:\" to widen/narrow the replica set");
+            zone_weight_deprecation_logged = true;
+        }
+        if (cp->zone_weight > 100) {
+            log_error("conf: directive \"zone_weight:\" must be between 0 and 100");
+            return NC_ERROR;
+        }
+    }
+
+    /*
+     * Latency-weighted read knobs. cross_az_surcharge_us: any uint is fine (a
+     * latency-equivalent penalty in usec; 0 == pure latency). latency_band_factor:
+     * any uint parses, but 0 means "keep every healthy replica in the band"
+     * (no good-latency filtering) -- legal, but worth a heads-up since it
+     * disables the far-replica exclusion, so log it.
+     */
+    if (cp->cross_az_surcharge_us == CONF_UNSET_NUM) {
+        cp->cross_az_surcharge_us = CONF_DEFAULT_CROSS_AZ_SURCHARGE_US;
+    }
+
+    if (cp->latency_band_factor == CONF_UNSET_NUM) {
+        cp->latency_band_factor = CONF_DEFAULT_LATENCY_BAND_FACTOR;
+    } else if (cp->latency_band_factor == 0) {
+        log_warn("conf: pool '%.*s': latency_band_factor:0 keeps ALL healthy "
+                 "replicas (no good-latency filtering); a far/slow replica will "
+                 "not be excluded", cp->name.len, cp->name.data);
     }
 
     if (cp->connection_max_lifetime == CONF_UNSET_NUM) {

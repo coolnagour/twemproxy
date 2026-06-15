@@ -419,6 +419,25 @@ bin_selectweighted="$(build_test test_select_weighted "$here/test_select_weighte
 # old min(naddresses,max) target.
 bin_dynconncount="$(build_test test_dynamic_conn_count "$here/test_dynamic_conn_count.c")"
 
+# --- latency-weighted reads #5: config knobs + zone_weight deprecation -------
+# Drives the REAL conf parse pipeline (conf_create -> conf_pool_each_transform
+# via server_pool_init) against temp YAML files. Proves cross_az_surcharge_us +
+# latency_band_factor parse onto the server_pool, omitted keys take the
+# CONF_DEFAULT_*, latency_band_factor:0 passes through (keep-all), a pool that
+# sets zone_weight emits a deprecation warning during validation (captured by
+# redirecting stderr), and a clean config emits none. All pools are
+# dynamic_endpoint:false so the transform stays offline (no DNS). It allocates
+# (the parsed conf graph + the transformed server_pool), so the leaks run guards
+# every path frees. Two builds from one source:
+#   fixed : the REAL nc_conf.c -> knobs parse + the deprecation warning fires.
+#   prefix: -DTEST_PREFIX_NO_PARSE mirrors the PRE-Task-5 world (the transform
+#           hardcodes CONF_DEFAULT_* regardless of config, and no deprecation
+#           warning exists) -> the configured-non-default assertion AND the
+#           warning-emitted assertion both fail -> non-zero exit. The TDD red.
+bin_confknobs="$(build_test test_conf_latency_knobs "$here/test_conf_latency_knobs.c")"
+bin_confknobs_prefix="$(build_test test_conf_latency_knobs_prefix \
+                  "$here/test_conf_latency_knobs.c" -DTEST_PREFIX_NO_PARSE)"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -440,6 +459,8 @@ run_test    "$bin_weightedpick" 0 "test_weighted_pick (latency-weighted reads #1
 run_test    "$bin_goodband" 0 "test_good_band (latency-weighted reads #2 eff-latency + good-latency band)" || fail=1
 run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted reads #3 unified server_select_best_address)" || fail=1
 run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted reads #4 multi-connection count wiring)" || fail=1
+run_test    "$bin_confknobs" 0 "test_conf_latency_knobs (latency-weighted reads #5 conf knobs + zone_weight deprecation, fixed build)" || fail=1
+run_nonzero "$bin_confknobs_prefix" "test_conf_latency_knobs (latency-weighted reads #5, NO-PARSE pre-Task-5 reproduction)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else

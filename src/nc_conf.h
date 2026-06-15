@@ -148,7 +148,9 @@ struct conf_pool {
     /* Cloud-agnostic configuration */
     int                zone_aware;            /* zone_aware: enable zone-aware routing */
     int                dynamic_endpoint;      /* dynamic_endpoint: opt in to dynamic DNS accumulation + zone routing for this pool's servers */
-    int                zone_weight;           /* zone_weight: extra weight for same-zone servers */
+    int                zone_weight;           /* zone_weight: extra weight for same-zone servers [deprecated by the latency model] */
+    int                cross_az_surcharge_us; /* cross_az_surcharge_us: latency-equivalent penalty (usec) added to cross-AZ replicas (0 == pure latency) */
+    int                latency_band_factor;   /* latency_band_factor: good-set band multiplier (a replica is in band iff eff_latency <= factor*min) */
     int                connection_max_lifetime; /* connection_max_lifetime: max lifetime in seconds */
     int                dns_failure_threshold; /* dns_failure_threshold: failures before unhealthy */
     int                dns_expiration_minutes; /* dns_expiration_minutes: expire addresses after N minutes */
