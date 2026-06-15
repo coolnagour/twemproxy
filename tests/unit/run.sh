@@ -402,6 +402,23 @@ bin_goodband="$(build_test test_good_band "$here/test_good_band.c")"
 # leaks run guards every path frees.
 bin_selectweighted="$(build_test test_select_weighted "$here/test_select_weighted.c")"
 
+# --- latency-weighted reads #4: multi-connection count wiring ---------------
+# Drives the REAL server_good_set_size() + server_update_dynamic_connections()
+# from nc_server.c against a hand-built server+pool+dns. Proves the Task-4
+# connection-count DECISION: a dynamic_endpoint server's target count is the
+# good-latency-band size (min(|good_set|, max_server_connections)), NOT raw
+# naddresses (a far/out-of-band replica does not inflate it); the max cap holds;
+# a surcharge that pushes a cross-AZ replica out of band shrinks the count; a
+# fully-degraded fleet floors at >=1 instead of collapsing to 0; and the STATIC
+# path is untouched (cap stays server_connections=1, the update is a no-op). The
+# count helpers never call stats_* (unlike server_select_best_address), so the
+# test runs with a NULL ctx. Both helpers are allocation-free (caller stack
+# buffers), so the leaks run finds nothing. Single fixed build: the pre-Task-4
+# tree does not even LINK this (server_good_set_size did not exist) -- the
+# strongest red -- and the far-does-not-inflate assert additionally fails the
+# old min(naddresses,max) target.
+bin_dynconncount="$(build_test test_dynamic_conn_count "$here/test_dynamic_conn_count.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -422,6 +439,7 @@ run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware st
 run_test    "$bin_weightedpick" 0 "test_weighted_pick (latency-weighted reads #1 pure weighted picker)" || fail=1
 run_test    "$bin_goodband" 0 "test_good_band (latency-weighted reads #2 eff-latency + good-latency band)" || fail=1
 run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted reads #3 unified server_select_best_address)" || fail=1
+run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted reads #4 multi-connection count wiring)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else

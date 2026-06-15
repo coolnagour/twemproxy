@@ -25,8 +25,11 @@
 #include <nc_conf.h>
 #include <nc_client.h>
 
-/* Forward declarations */
-static void server_update_dynamic_connections(struct server *server);
+/* Forward declarations.
+ * server_update_dynamic_connections + server_good_set_size are NON-static so the
+ * unit tests (tests/unit/test_dynamic_conn_count.c) drive the real count logic;
+ * their prototypes also live in nc_server.h. */
+void server_update_dynamic_connections(struct server *server);
 
 static void
 server_resolve(struct server *server, struct conn *conn)
@@ -217,19 +220,47 @@ server_conn(struct server *server)
 {
     struct server_pool *pool;
     struct conn *conn;
+    uint32_t conn_cap;
 
     pool = server->owner;
 
     /*
-     * FIXME: handle multiple server connections per server and do load
-     * balancing on it. Support multiple algorithms for
-     * 'server_connections:' > 0 key
+     * How many connections this server is allowed to open.
+     *
+     * Static (single-address) servers keep the classic fixed cap
+     * server_connections (default 1) -- there is only one backend address, so
+     * extra connections would all land on it; nothing to balance.
+     *
+     * Dynamic (dynamic_endpoint / read-pool) servers use the dynamically-sized
+     * current_server_connections instead, so reads fan out across the
+     * good-latency replica set: server_update_dynamic_connections() keeps it at
+     * min(|good_set|, max_server_connections) on every DNS resolve, and each new
+     * connection independently weight-picks its address in server_resolve() ->
+     * server_select_best_address(). The existing round-robin below over those
+     * connections then distributes requests in proportion to latency weight.
+     *
+     * current_server_connections can SHRINK between calls (the good set narrows
+     * under churn), so this is a `<=`, not the old `==`: the queue may briefly
+     * hold MORE conns than the new, smaller cap. Those surplus conns are not
+     * leaked -- they are reused round-robin and retired by the lifetime/churn
+     * sweep (core_dns_maintenance) as they go quiescent, after which ns_conn_q
+     * settles back at or below the cap. We do NOT force-close here.
      */
+    conn_cap = server->is_dynamic ? pool->current_server_connections
+                                  : pool->server_connections;
 
-    if (server->ns_conn_q < pool->server_connections) {
+    if (server->ns_conn_q < conn_cap) {
         return conn_get(server, false, pool->redis);
     }
-    ASSERT(server->ns_conn_q == pool->server_connections);
+    /*
+     * Reuse path: ns_conn_q >= conn_cap. For a static server the cap is fixed,
+     * so equality holds exactly (we only ever grew it up to the cap). For a
+     * dynamic server the cap can have shrunk since these conns were opened, so
+     * ns_conn_q may legitimately EXCEED it (the surplus drains via the churn
+     * sweep) -- assert only the >= we just branched on.
+     */
+    ASSERT(server->is_dynamic ? server->ns_conn_q >= conn_cap
+                              : server->ns_conn_q == conn_cap);
 
     /*
      * Pick a server connection from the head of the queue and insert
@@ -2220,40 +2251,116 @@ server_select_best_address(struct server *server)
     return best_idx;
 }
 
-static void
+/*
+ * How many replicas are in the "good-latency band" right now -- i.e. how many
+ * connections it is worth opening so reads fan out across the genuinely fast
+ * replicas (and no further). This is the SIZE counterpart of the address
+ * selection in server_select_best_address(): same healthy gate, same effective
+ * latency, same band, same max_server_connections cap -- reusing the Task 1-3
+ * pure helpers so the count can never diverge from where traffic actually goes.
+ *
+ * Allocation-free + integer-only (caller-less stack buffers sized to the
+ * per-server address cap, exactly like server_select_best_address): safe to call
+ * on the resolve path. Returns 0 only when nothing is healthy yet (very early
+ * boot / a fully-degraded fleet); the caller floors that to a safe minimum so
+ * the pool can still bootstrap a connection.
+ */
+uint32_t
+server_good_set_size(struct server *server)
+{
+    struct server_dns *dns;
+    struct server_pool *pool;
+    uint32_t healthy_idxs[MAX_ADDRESSES_PER_SERVER];
+    uint32_t eff_latency[MAX_ADDRESSES_PER_SERVER];
+    uint32_t good_idxs[MAX_ADDRESSES_PER_SERVER];
+    uint32_t healthy_count = 0;
+    uint32_t max_count, i;
+
+    if (server == NULL || server->dns == NULL) {
+        return 0;
+    }
+    dns = server->dns;
+    pool = server->owner;
+    if (pool == NULL || dns->naddresses == 0) {
+        return 0;
+    }
+
+    /* Collect healthy addresses (same gate server_select_best_address uses). */
+    for (i = 0; i < dns->naddresses && healthy_count < MAX_ADDRESSES_PER_SERVER; i++) {
+        if (server_is_healthy(server, i)) {
+            healthy_idxs[healthy_count] = i;
+            eff_latency[healthy_count] =
+                server_addr_eff_latency(dns, i, pool->cross_az_surcharge_us);
+            healthy_count++;
+        }
+    }
+    if (healthy_count == 0) {
+        return 0;
+    }
+
+    /* Cap the band at max_server_connections; 0/unset -> bounded by the healthy
+     * count only. (Mirrors the cap in server_select_best_address.) */
+    max_count = pool->max_server_connections;
+    if (max_count == 0) {
+        max_count = healthy_count;
+    }
+
+    /* good_idxs is write-only here; we only need the count. out_eff_latency NULL. */
+    return server_build_good_set(healthy_idxs, eff_latency, healthy_count,
+                                 pool->latency_band_factor, max_count,
+                                 good_idxs, NULL);
+}
+
+void
 server_update_dynamic_connections(struct server *server)
 {
     struct server_pool *pool;
     struct server_dns *dns;
-    
+
     if (server == NULL || !server->is_dynamic) {
         return;
     }
-    
+
     pool = server->owner;
     dns = server->dns;
-    
+
     if (pool == NULL || dns == NULL || !pool->dynamic_server_connections) {
         return;
     }
-    
-    /* Calculate optimal connections: min(dns_addresses, max_server_connections) */
-    uint32_t optimal_connections = dns->naddresses;
-    if (optimal_connections > pool->max_server_connections) {
-        optimal_connections = pool->max_server_connections;
+
+    /*
+     * Target connection count = min(|good_set|, max_server_connections): open a
+     * connection per good-latency replica, no more. Opening to the WHOLE good set
+     * (vs the old min(naddresses, max), which also counted far/out-of-band
+     * replicas) is what makes the round-robin in server_conn() spread reads only
+     * across the fast replicas -- the weighted pick already excludes out-of-band
+     * addrs from each connection's choice, so counting them was pure waste
+     * (surplus connections that would only ever re-pick an in-band addr).
+     *
+     * If the good set is empty (server_good_set_size == 0: nothing healthy yet at
+     * very-early boot, or a fully-degraded fleet), fall back to the conservative
+     * min(naddresses, max) so we still provision at least one connection and can
+     * bootstrap -- never collapse the pool to zero connections.
+     */
+    uint32_t optimal_connections = server_good_set_size(server);
+    if (optimal_connections == 0) {
+        optimal_connections = dns->naddresses;
+        if (optimal_connections > pool->max_server_connections) {
+            optimal_connections = pool->max_server_connections;
+        }
     }
-    
+
     /* Ensure at least 1 connection */
     if (optimal_connections < 1) {
         optimal_connections = 1;
     }
-    
+
     /* Update current_server_connections if it changed */
     if (pool->current_server_connections != optimal_connections) {
         uint32_t old_connections = pool->current_server_connections;
         pool->current_server_connections = optimal_connections;
-        
-        log_info("dynamic server_connections updated for '%.*s': %"PRIu32" -> %"PRIu32" (dns_addresses: %"PRIu32")",
+
+        log_info("dynamic server_connections updated for '%.*s': %"PRIu32" -> %"PRIu32" (of %"PRIu32" dns addresses)",
                  server->pname.len, server->pname.data,
                  old_connections, optimal_connections, dns->naddresses);
     }

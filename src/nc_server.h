@@ -267,6 +267,23 @@ uint32_t server_build_good_set(const uint32_t *healthy_idxs,
                                uint32_t healthy_count, uint32_t band_factor,
                                uint32_t max_count, uint32_t *out_idxs,
                                uint32_t *out_eff_latency);
+
+/*
+ * server_good_set_size: number of healthy replicas currently in the good-latency
+ * band (eff_latency <= band_factor*min), capped at max_server_connections. The
+ * SIZE counterpart of server_select_best_address's per-connection pick: a
+ * dynamic_endpoint read pool opens this many connections so reads fan out across
+ * the fast replicas. Allocation-free, integer-only. Returns 0 when nothing is
+ * healthy yet (caller floors to a safe minimum).
+ *
+ * server_update_dynamic_connections: recompute a dynamic server's effective
+ * connection cap (pool->current_server_connections) = min(|good_set|,
+ * max_server_connections); a no-op for static servers or when
+ * dynamic_server_connections is off. Called on every DNS resolve. Both are
+ * non-static so the unit tests drive the real production code.
+ */
+uint32_t server_good_set_size(struct server *server);
+void server_update_dynamic_connections(struct server *server);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size);

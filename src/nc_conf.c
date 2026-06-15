@@ -1721,8 +1721,18 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
         cp->dns_health_check_interval = CONF_DEFAULT_DNS_HEALTH_CHECK_INTERVAL;
     }
 
+    /*
+     * dynamic_server_connections defaults ON for a dynamic_endpoint (read) pool
+     * and OFF otherwise. A dynamic_endpoint pool resolves many replica
+     * addresses and now wants one connection per good-latency replica (so reads
+     * fan out -- the whole point of latency-weighted reads); a static pool has a
+     * single address per server, so dynamic scaling has nothing to do. An
+     * operator can still pin it explicitly either way. (dynamic_endpoint is
+     * finalised above, so this sees its effective value.)
+     */
     if (cp->dynamic_server_connections == CONF_UNSET_NUM) {
-        cp->dynamic_server_connections = CONF_DEFAULT_DYNAMIC_SERVER_CONNECTIONS;
+        cp->dynamic_server_connections = cp->dynamic_endpoint
+            ? 1 : CONF_DEFAULT_DYNAMIC_SERVER_CONNECTIONS;
     }
 
     if (cp->max_server_connections == CONF_UNSET_NUM) {
