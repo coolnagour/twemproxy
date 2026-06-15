@@ -498,6 +498,11 @@ conf_pool_each_transform(void *elem, void *data)
     /* Cloud-agnostic configuration */
     sp->zone_aware = cp->zone_aware ? 1 : 0;
     sp->zone_weight = (uint32_t)cp->zone_weight;
+    /* Latency-weighted read selection knobs. Config PARSING of these directives
+     * lands in a later task; until then every pool takes the defaults so the
+     * unified selection tail has sane values (pure latency, band factor 3). */
+    sp->cross_az_surcharge_us = CONF_DEFAULT_CROSS_AZ_SURCHARGE_US;
+    sp->latency_band_factor = CONF_DEFAULT_LATENCY_BAND_FACTOR;
     sp->connection_max_lifetime = (int64_t)cp->connection_max_lifetime * 1000000LL; /* convert to microseconds */
     sp->dns_failure_threshold = (uint32_t)cp->dns_failure_threshold;
     sp->dns_expiration_minutes = (int64_t)cp->dns_expiration_minutes * 60000000LL; /* convert to microseconds */

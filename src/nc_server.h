@@ -185,8 +185,17 @@ struct server_pool {
     
     /* Cloud-agnostic configuration */
     unsigned           zone_aware:1;         /* enable zone-aware routing? */
-    uint32_t           zone_weight;          /* extra weight for same-zone servers (0-100) */
+    uint32_t           zone_weight;          /* extra weight for same-zone servers (0-100) [deprecated by the latency model] */
     int64_t            connection_max_lifetime; /* force close connections after max lifetime (usec) */
+
+    /* Latency-weighted read selection (see
+     * docs/superpowers/specs/2026-06-15-twemproxy-latency-weighted-reads-design.md).
+     * cross_az_surcharge_us: latency-equivalent penalty added to cross-AZ replicas
+     * (0 == pure latency). latency_band_factor: a replica is in the "good set" iff
+     * eff_latency <= band_factor * min_eff_latency. Config PARSING lands in a later
+     * task; for now they are initialised to the CONF_DEFAULT_* values. */
+    uint32_t           cross_az_surcharge_us; /* cross-AZ latency surcharge (usec) */
+    uint32_t           latency_band_factor;   /* good-set band multiplier */
 
     /* Dynamic connection scaling */
     unsigned           dynamic_server_connections:1; /* enable dynamic server_connections scaling? */

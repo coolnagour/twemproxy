@@ -388,6 +388,20 @@ bin_weightedpick="$(build_test test_weighted_pick "$here/test_weighted_pick.c")"
 # Single fixed build.
 bin_goodband="$(build_test test_good_band "$here/test_good_band.c")"
 
+# --- latency-weighted reads #3: unified selection in server_select_best_address
+# Drives the REAL server_select_best_address() end to end against a hand-built
+# server+pool+dns (4 replicas: two same-AZ 100/110us, one cross-AZ 120us, one far
+# 5000us). Proves the Task-3 tail (good-latency band -> weighted pick) chooses the
+# in-band replicas inverse-latency-weighted, NEVER the far one, tracks the
+# same/cross zone counters, and degenerates to a single healthy replica. The
+# untested/probe paths are neutralised via the dns fields (see the test header);
+# the residual ~5% random-probe is pinned off the far replica via current_addr_idx.
+# Single build: this is the REAL integration path, RED on the pre-Task-3 discrete
+# tail (far drew traffic, distribution was uniform-ish) and GREEN after the
+# rewrite. It allocates (healthy/zone arrays + the hand-built stats graph), so the
+# leaks run guards every path frees.
+bin_selectweighted="$(build_test test_select_weighted "$here/test_select_weighted.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -407,6 +421,7 @@ run_nonzero "$bin_dnsoom_prefix" "test_dns_resolve_oom (prod-hardening #2, NO-RE
 run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware stats classify+format)" || fail=1
 run_test    "$bin_weightedpick" 0 "test_weighted_pick (latency-weighted reads #1 pure weighted picker)" || fail=1
 run_test    "$bin_goodband" 0 "test_good_band (latency-weighted reads #2 eff-latency + good-latency band)" || fail=1
+run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted reads #3 unified server_select_best_address)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else

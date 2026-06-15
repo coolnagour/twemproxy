@@ -2141,25 +2141,44 @@ server_select_best_address(struct server *server)
             }
         }
         
-        if (same_zone_count > 0 && rand_val < pool->zone_weight) {
-            /* Select from same-zone servers */
-            selected_idx = same_zone_servers[random() % same_zone_count];
-            stats_server_incr(pool->ctx, server, same_zone_selections);
-            stats_server_set(pool->ctx, server, current_latency_us, dns->addrs[selected_idx].latency);
+        /*
+         * Unified latency-weighted selection (replaces the old discrete
+         * zone_weight%-then-uniform pick). Spread reads over the "good-latency
+         * band" -- the healthy replicas whose effective latency is within
+         * latency_band_factor * the fastest -- weighted by inverse effective
+         * latency, so a faster replica (in any AZ) takes a larger share and a
+         * far/slow replica (out of band) is excluded. cross_az_surcharge_us is
+         * an optional cost dial added to cross-AZ replicas (0 == pure latency).
+         * The untested/probe paths above already ran and intentionally bypassed
+         * this, so they keep every replica's latency fresh.
+         *
+         * Allocation-free: caller-provided stack buffers sized to the per-server
+         * address cap (healthy_count <= dns->naddresses <= MAX_ADDRESSES_PER_SERVER).
+         */
+        uint32_t eff_latency[MAX_ADDRESSES_PER_SERVER];
+        uint32_t good_idxs[MAX_ADDRESSES_PER_SERVER];
+        uint32_t good_eff[MAX_ADDRESSES_PER_SERVER];
+        uint32_t good_count, max_count;
 
-            nc_free(healthy_servers);
-            nc_free(same_zone_servers);
-            nc_free(other_zone_servers);
-
-            log_info("-> selected SAME-ZONE address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" < %"PRIu32"%%)",
-                     selected_idx, server->pname.len, server->pname.data,
-                     dns->addrs[selected_idx].latency, dns->addrs[selected_idx].zone_id, rand_val, pool->zone_weight);
-            return selected_idx;
+        for (i = 0; i < healthy_count; i++) {
+            eff_latency[i] = server_addr_eff_latency(dns, healthy_servers[i],
+                                                     pool->cross_az_surcharge_us);
         }
 
-        /* Select from all healthy servers (distributed) */
-        if (healthy_count > 0) {
-            selected_idx = healthy_servers[random() % healthy_count];
+        /* Cap the band at max_server_connections; 0/unset -> no extra cap
+         * (bounded anyway by the healthy count). */
+        max_count = pool->max_server_connections;
+        if (max_count == 0) {
+            max_count = dns->naddresses;
+        }
+
+        good_count = server_build_good_set(healthy_servers, eff_latency,
+                                           healthy_count,
+                                           pool->latency_band_factor,
+                                           max_count, good_idxs, good_eff);
+
+        if (good_count > 0) {
+            selected_idx = server_weighted_pick(good_eff, good_idxs, good_count);
 
             if (dns->addrs[selected_idx].zone_id != dns->local_zone_id) {
                 stats_server_incr(pool->ctx, server, cross_zone_selections);
@@ -2172,12 +2191,17 @@ server_select_best_address(struct server *server)
             nc_free(same_zone_servers);
             nc_free(other_zone_servers);
 
-            log_info("-> selected DISTRIBUTED address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, zone: %"PRIu32", rand: %"PRIu32" >= %"PRIu32"%%)",
+            log_info("-> selected LATENCY-WEIGHTED address %"PRIu32" for '%.*s' (latency: %"PRIu32"us, eff: %"PRIu32"us, zone: %"PRIu32", good-set: %"PRIu32"/%"PRIu32")",
                      selected_idx, server->pname.len, server->pname.data,
-                     dns->addrs[selected_idx].latency, dns->addrs[selected_idx].zone_id, rand_val, pool->zone_weight);
+                     dns->addrs[selected_idx].latency,
+                     server_addr_eff_latency(dns, selected_idx, pool->cross_az_surcharge_us),
+                     dns->addrs[selected_idx].zone_id, good_count, healthy_count);
             return selected_idx;
         }
-        
+
+        /* good_count == 0 is unreachable for healthy_count > 0 (band_factor 0 is
+         * treated as "keep all"), but guard the free paths regardless and fall
+         * through to the lowest-latency best_idx below. */
         nc_free(same_zone_servers);
         nc_free(other_zone_servers);
     } else {
