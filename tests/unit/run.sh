@@ -438,6 +438,22 @@ bin_confknobs="$(build_test test_conf_latency_knobs "$here/test_conf_latency_kno
 bin_confknobs_prefix="$(build_test test_conf_latency_knobs_prefix \
                   "$here/test_conf_latency_knobs.c" -DTEST_PREFIX_NO_PARSE)"
 
+# --- latency-weighted reads #6: per-replica stats observability -------------
+# Drives the REAL server_get_read_hosts_info() (the per-server address_details[]
+# JSON the HTTP stats endpoint embeds) against a hand-built dynamic
+# server+pool+dns, then string-parses the rendered JSON. Proves each replica
+# carries the three new fields -- eff_latency, weight, in_good_set -- and that
+# they are sane: eff_latency == measured latency at surcharge 0, weight ==
+# WEIGHT_SCALE/(eff+floor) (the SAME math as server_weighted_pick, via the shared
+# helper), the fastest replica has the largest weight, the far replica is out of
+# the good set with a tiny weight, a cross_az_surcharge_us shifts the cross-AZ
+# eff_latency and evicts the close cross-AZ replica from the band, and the
+# document stays balanced JSON. It allocates (the hand-built dns + addrs), so the
+# leaks run guards every path frees. Single fixed build (no compile-time mirror,
+# same shape as test_stats_http): the field-presence assertions are themselves
+# the red against the pre-Task-6 render that did not emit them.
+bin_statsreplica="$(build_test test_stats_replica_fields "$here/test_stats_replica_fields.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -461,6 +477,7 @@ run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted read
 run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted reads #4 multi-connection count wiring)" || fail=1
 run_test    "$bin_confknobs" 0 "test_conf_latency_knobs (latency-weighted reads #5 conf knobs + zone_weight deprecation, fixed build)" || fail=1
 run_nonzero "$bin_confknobs_prefix" "test_conf_latency_knobs (latency-weighted reads #5, NO-PARSE pre-Task-5 reproduction)" || fail=1
+run_test    "$bin_statsreplica" 0 "test_stats_replica_fields (latency-weighted reads #6 eff_latency/weight/in_good_set per replica)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else

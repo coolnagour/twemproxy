@@ -239,9 +239,16 @@ uint32_t server_select_best_address(struct server *server);
  *   math, no heap, no floats. Uses random() (the process-seeded PRNG) -- does NOT
  *   seed it. count==0 returns 0 (no valid index). If every weight is 0, falls
  *   back to a uniform pick.
+ *
+ * server_addr_weight: the single source of truth for an address's selection
+ *   weight from its effective latency -- WEIGHT_SCALE / (eff_latency +
+ *   LATENCY_FLOOR_US), in uint64. server_weighted_pick accumulates this, and the
+ *   stats render reports it, so the weight shown in stats can never drift from
+ *   the weight selection actually uses. Pure integer math, no floats.
  */
 uint32_t server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
                               uint32_t count);
+uint64_t server_addr_weight(uint32_t eff_latency);
 
 /*
  * server_addr_eff_latency: effective latency of address i, in usec:

@@ -1761,7 +1761,24 @@ server_dns_check_update(struct server *server)
  *
  * count==0 returns 0 (there is no valid index; matches the "return 0" guard the
  * callers already use for an empty address set).
+ *
+ * server_addr_weight (just below) is the single source of truth for an address's
+ * weight from its effective latency; both passes here and the stats render call
+ * it, so the two can never drift.
  */
+uint64_t
+server_addr_weight(uint32_t eff_latency)
+{
+    /*
+     * The ONE place the per-address weight is computed. server_weighted_pick
+     * (selection) and server_get_read_hosts_info (stats) both call this, so the
+     * weight reported in stats is, by construction, the weight selection uses --
+     * they cannot drift. LATENCY_FLOOR_US bounds the denominator away from 0
+     * (and damps measurement noise), so no divide-by-zero is possible here.
+     */
+    return (uint64_t)WEIGHT_SCALE / ((uint64_t)eff_latency + LATENCY_FLOOR_US);
+}
+
 uint32_t
 server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
                      uint32_t count)
@@ -1776,7 +1793,7 @@ server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
 
     /* Pass 1: accumulate total weight. */
     for (k = 0; k < count; k++) {
-        total += (uint64_t)WEIGHT_SCALE / ((uint64_t)eff_latency[k] + LATENCY_FLOOR_US);
+        total += server_addr_weight(eff_latency[k]);
     }
 
     /* Degenerate guard: every weight floored to 0 -> uniform fallback. */
@@ -1788,7 +1805,7 @@ server_weighted_pick(const uint32_t *eff_latency, const uint32_t *idxs,
     r = (uint64_t)random() % total;
     acc = 0;
     for (k = 0; k < count; k++) {
-        acc += (uint64_t)WEIGHT_SCALE / ((uint64_t)eff_latency[k] + LATENCY_FLOOR_US);
+        acc += server_addr_weight(eff_latency[k]);
         if (r < acc) {
             return idxs[k];
         }
@@ -2580,8 +2597,51 @@ server_get_read_hosts_info(struct server *server, const char *key, char *buffer,
         log_warn("BUFFER OVERFLOW: Stats buffer too small! written=%zu, buffer_size=%zu", written, buffer_size);
         return NC_ERROR;
     }
-    
-    
+
+    /*
+     * Pre-compute good-latency-band membership for every address so each
+     * address_details[] entry can report in_good_set. This mirrors
+     * server_good_set_size() exactly -- same healthy gate, same effective
+     * latency, same band_factor, same max_server_connections cap, the same three
+     * pure helpers (server_is_healthy / server_addr_eff_latency /
+     * server_build_good_set) -- so the band shown in stats is the band selection
+     * actually opens connections over; it cannot drift. Computed once here (read-
+     * only, stats requests are infrequent) rather than per address.
+     */
+    bool in_good_set[MAX_ADDRESSES_PER_SERVER];
+    memset(in_good_set, 0, sizeof(in_good_set));
+    {
+        uint32_t healthy_idxs[MAX_ADDRESSES_PER_SERVER];
+        uint32_t band_eff[MAX_ADDRESSES_PER_SERVER];
+        uint32_t good_idxs[MAX_ADDRESSES_PER_SERVER];
+        uint32_t healthy_count = 0, good_count, max_count, k;
+
+        for (i = 0; i < dns->naddresses && healthy_count < MAX_ADDRESSES_PER_SERVER; i++) {
+            if (server_is_healthy(server, i)) {
+                healthy_idxs[healthy_count] = i;
+                band_eff[healthy_count] =
+                    server_addr_eff_latency(dns, i, pool->cross_az_surcharge_us);
+                healthy_count++;
+            }
+        }
+        if (healthy_count > 0) {
+            max_count = pool->max_server_connections;
+            if (max_count == 0) {
+                max_count = healthy_count;
+            }
+            good_count = server_build_good_set(healthy_idxs, band_eff,
+                                               healthy_count,
+                                               pool->latency_band_factor,
+                                               max_count, good_idxs, NULL);
+            for (k = 0; k < good_count; k++) {
+                if (good_idxs[k] < MAX_ADDRESSES_PER_SERVER) {
+                    in_good_set[good_idxs[k]] = true;
+                }
+            }
+        }
+    }
+
+
     /* Add details for each address */
     for (i = 0; i < dns->naddresses; i++) {
         char addr_str[INET6_ADDRSTRLEN];
@@ -2631,12 +2691,26 @@ server_get_read_hosts_info(struct server *server, const char *key, char *buffer,
         char cname_escaped[1536];
         server_json_escape(cname_escaped, sizeof(cname_escaped), cname_str);
 
+        /*
+         * Latency-weighted-read observability. eff_latency / weight use the SAME
+         * functions selection uses (server_addr_eff_latency + the shared
+         * server_addr_weight that server_weighted_pick accumulates), and
+         * in_good_set was pre-computed above with the same band logic -- so these
+         * three numbers describe exactly how reads are spread, not an
+         * approximation of it.
+         */
+        uint32_t eff_latency = server_addr_eff_latency(dns, i, pool->cross_az_surcharge_us);
+        uint64_t weight = server_addr_weight(eff_latency);
+
         addr_written = snprintf(buffer + written, buffer_size - written,
             "      {\n"
             "        \"index\": %"PRIu32",\n"
             "        \"ip\": \"%s\",\n"
             "        \"cname\": \"%s\",\n"
             "        \"latency_us\": %"PRIu32",\n"
+            "        \"eff_latency\": %"PRIu32",\n"
+            "        \"weight\": %"PRIu64",\n"
+            "        \"in_good_set\": %s,\n"
             "        \"failures\": %"PRIu32",\n"
             "        \"zone_id\": %"PRIu32",\n"
             "        \"zone_type\": \"%s\",\n"
@@ -2647,7 +2721,10 @@ server_get_read_hosts_info(struct server *server, const char *key, char *buffer,
             "        \"last_chosen_for_connection\": %"PRId64",\n"
             "        \"requests\": %"PRIu64"\n"
             "      }%s\n",
-            i, addr_str, cname_escaped, a->latency, a->failure_count,
+            i, addr_str, cname_escaped, a->latency,
+            eff_latency, weight,
+            (i < MAX_ADDRESSES_PER_SERVER && in_good_set[i]) ? "true" : "false",
+            a->failure_count,
             zone_id, zone_type, zone_weight,
             is_healthy ? "true" : "false",
             (i == server->current_addr_idx) ? "true" : "false",
