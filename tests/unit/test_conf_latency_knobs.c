@@ -63,6 +63,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <grp.h>
 
 #include <nc_core.h>
 #include <nc_conf.h>
@@ -126,6 +129,43 @@ write_temp_conf(const char *text)
     return path;
 }
 
+/*
+ * conf_parse() resolves the worker-drop user/group via getpwnam()/getgrnam() at
+ * the end of parsing, even for a config that omits the "global:" section (it then
+ * falls back to CONF_DEFAULT_USER / CONF_DEFAULT_GROUP, both "nobody"). That
+ * default is RHEL-centric: Debian/Ubuntu have a "nobody" USER but no "nobody"
+ * GROUP (they use "nogroup"), so getgrnam("nobody") returns NULL there and the
+ * whole parse fails -- which has nothing to do with what this test checks (the
+ * latency knobs + the zone_weight deprecation).
+ *
+ * Every real shipped config under conf/ declares an explicit "global:" section,
+ * so prepend one here too, using the names of the user and group THIS PROCESS is
+ * already running as. Those are guaranteed to resolve on whatever host runs the
+ * test (Debian, RHEL, macOS, a container), making the test self-sufficient
+ * instead of depending on which default privilege-drop accounts the OS ships.
+ * Returns a malloc'd "global:\n...\npools:\n..." string the caller frees.
+ */
+static char *
+with_global_header(const char *pools_text)
+{
+    struct passwd *pw = getpwuid(getuid());
+    struct group  *gr = getgrgid(getgid());
+    const char *user  = (pw != NULL && pw->pw_name != NULL) ? pw->pw_name : "root";
+    const char *group = (gr != NULL && gr->gr_name != NULL) ? gr->gr_name : "root";
+
+    static const char *fmt =
+        "global:\n"
+        "    user: %s\n"
+        "    group: %s\n"
+        "%s";
+    int need = snprintf(NULL, 0, fmt, user, group, pools_text);
+    ASSERT(need > 0);
+    char *out = nc_alloc((size_t)need + 1);
+    ASSERT(out != NULL);
+    (void)snprintf(out, (size_t)need + 1, fmt, user, group, pools_text);
+    return out;
+}
+
 #ifdef TEST_PREFIX_NO_PARSE
 /*
  * Faithful mirror of the PRE-Task-5 world. Before Task 5, the conf_pool had no
@@ -157,7 +197,14 @@ mirror_clobber_to_defaults(struct array *pools)
 static struct conf *
 parse_and_transform(const char *text, struct context *ctx)
 {
-    char *path = write_temp_conf(text);
+    /*
+     * The CONF strings below carry only the "pools:" the test cares about; add a
+     * "global:" header naming this process's own user/group so conf_parse()'s
+     * privilege-drop lookup resolves on any host (see with_global_header()).
+     */
+    char *full = with_global_header(text);
+    char *path = write_temp_conf(full);
+    nc_free(full);
     struct conf *cf = conf_create(path);
     unlink(path);
     nc_free(path);
