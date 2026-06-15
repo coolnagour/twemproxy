@@ -1180,6 +1180,24 @@ conf_open(char *filename)
     cf->parsed = 0;
     cf->valid = 0;
 
+    /*
+     * Initialize the global section to its "unset" state here, not only inside
+     * conf_parse_global_section(). cf is malloc'd (not zeroed) and the "global:"
+     * section is optional, so a config that omits it would otherwise leave
+     * cf->global as uninitialised garbage. conf_parse() then reads
+     * cf->global.user.data unconditionally and calls getpwnam() on it -- a wild
+     * read (crash / SEGV) when the pointer is garbage rather than NULL. Seeding
+     * the unset state here makes the no-"global:"-section path well-defined: the
+     * defaults (CONF_DEFAULT_USER / _GROUP, etc.) are applied in conf_parse().
+     * conf_parse_global_section() re-applies the same init when a section is
+     * present, so this is a no-op for configs that do declare "global:".
+     */
+    cf->global.worker_processes = CONF_UNSET_NUM;
+    cf->global.max_openfiles = CONF_UNSET_NUM;
+    cf->global.worker_shutdown_timeout = CONF_UNSET_NUM;
+    string_init(&cf->global.user);
+    string_init(&cf->global.group);
+
     log_debug(LOG_VVERB, "opened conf '%s'", filename);
 
     return cf;
