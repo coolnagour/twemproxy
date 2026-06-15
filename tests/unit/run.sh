@@ -438,6 +438,27 @@ bin_confknobs="$(build_test test_conf_latency_knobs "$here/test_conf_latency_kno
 bin_confknobs_prefix="$(build_test test_conf_latency_knobs_prefix \
                   "$here/test_conf_latency_knobs.c" -DTEST_PREFIX_NO_PARSE)"
 
+# --- conf: privilege-drop user/group resolution is lazy (root-gated) ----------
+# Drives the REAL conf_create() pipeline against a temp YAML file that omits the
+# optional `global:` section. The end-of-parse user/group resolution used to run
+# unconditionally and fall back to CONF_DEFAULT_USER/_GROUP ("nobody"), then
+# FAIL the whole parse if getpwnam()/getgrnam() returned NULL. "nobody" is a
+# RHEL-ism: Debian/Ubuntu (the fork's image base + the CI runners) have a
+# "nobody" user but no "nobody" group ("nogroup"), so a global:-less config
+# failed to parse there -- even though the accounts are only used by the
+# setgid/setuid drop, which runs ONLY as root. The fix gates the resolution on
+# `geteuid()==0` (the drop's own condition), so a non-root process parses any
+# config on any distro. It allocates (the parsed conf graph), so the leaks run
+# guards every path frees. Two builds from one source:
+#   fixed : the REAL nc_conf.c -> a no-global config parses to NC_OK non-root.
+#   prefix: -DTEST_PREFIX_FORCE_NOBODY mirrors the PRE-fix world by performing
+#           the exact ungated getgrnam(CONF_DEFAULT_GROUP) the old code did and
+#           asserting it resolves -> NULL on Debian/Ubuntu -> non-zero exit. The
+#           TDD red, pinned to the precise call the gate made conditional.
+bin_noglobal="$(build_test test_conf_no_global "$here/test_conf_no_global.c")"
+bin_noglobal_prefix="$(build_test test_conf_no_global_prefix \
+                  "$here/test_conf_no_global.c" -DTEST_PREFIX_FORCE_NOBODY)"
+
 # --- latency-weighted reads #6: per-replica stats observability -------------
 # Drives the REAL server_get_read_hosts_info() (the per-server address_details[]
 # JSON the HTTP stats endpoint embeds) against a hand-built dynamic
@@ -491,6 +512,8 @@ run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted read
 run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted reads #4 multi-connection count wiring)" || fail=1
 run_test    "$bin_confknobs" 0 "test_conf_latency_knobs (latency-weighted reads #5 conf knobs + zone_weight deprecation, fixed build)" || fail=1
 run_nonzero "$bin_confknobs_prefix" "test_conf_latency_knobs (latency-weighted reads #5, NO-PARSE pre-Task-5 reproduction)" || fail=1
+run_test    "$bin_noglobal" 0 "test_conf_no_global (no global: section parses non-root, fixed build)" || fail=1
+run_nonzero "$bin_noglobal_prefix" "test_conf_no_global (FORCE-NOBODY pre-fix reproduction -- getgrnam(\"nobody\") fails on Debian/Ubuntu)" || fail=1
 run_test    "$bin_statsreplica" 0 "test_stats_replica_fields (latency-weighted reads #6 eff_latency/weight/in_good_set per replica)" || fail=1
 run_test    "$bin_nulladdrs" 0 "test_health_null_addrs (latency-weighted reads #7 NULL-addrs health-check crash regression)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then

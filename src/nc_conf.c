@@ -1106,27 +1106,45 @@ conf_parse(struct conf *cf)
         cf->global.max_openfiles= CONF_DEFAULT_MAX_OPENFILES;
     }
 
-    // get uid
-    if (cf->global.user.data == CONF_UNSET_PTR) {
-        string_copy(&cf->global.user, (uint8_t *)CONF_DEFAULT_USER, sizeof(CONF_DEFAULT_USER) - 1);
-    }
-    pw = getpwnam((char *)cf->global.user.data);
-    if (pw == NULL) {
-        log_error("user[%s] not found: %s", cf->global.user.data, strerror(errno));
-        return NC_ERROR;
-    }
-    cf->global.uid = pw->pw_uid;
+    /*
+     * Resolve the worker privilege-drop user/group -- but ONLY when we are
+     * root. The drop itself (setgid/setuid in nc_process.c) runs only under
+     * `if (geteuid() == 0)`, and cf->global.uid/.gid/.user.data are read only
+     * inside those same root-gated blocks. So a non-root process never uses
+     * these accounts. Resolving them at parse time regardless of euid was both
+     * wasteful and a portability trap: the defaults (CONF_DEFAULT_USER /
+     * CONF_DEFAULT_GROUP) are both "nobody", which is RHEL-centric. Debian /
+     * Ubuntu ship a "nobody" user but no "nobody" group (they use "nogroup"),
+     * so getgrnam("nobody") returns NULL and a config that omits the optional
+     * global: section fails to parse there -- even though, running non-root,
+     * the group would never be used. Gating on geteuid()==0 (matching the drop
+     * condition exactly) makes any config parse for a non-root process on any
+     * distro, while keeping the resolution FATAL-on-not-found for the root case
+     * that actually performs the drop, so fail-fast behaviour is unchanged.
+     */
+    if (geteuid() == 0) {
+        // get uid
+        if (cf->global.user.data == CONF_UNSET_PTR) {
+            string_copy(&cf->global.user, (uint8_t *)CONF_DEFAULT_USER, sizeof(CONF_DEFAULT_USER) - 1);
+        }
+        pw = getpwnam((char *)cf->global.user.data);
+        if (pw == NULL) {
+            log_error("user[%s] not found: %s", cf->global.user.data, strerror(errno));
+            return NC_ERROR;
+        }
+        cf->global.uid = pw->pw_uid;
 
-    // get gid
-    if (cf->global.group.data == CONF_UNSET_PTR) {
-        string_copy(&cf->global.group, (uint8_t *)CONF_DEFAULT_GROUP, sizeof(CONF_DEFAULT_USER) - 1);
+        // get gid
+        if (cf->global.group.data == CONF_UNSET_PTR) {
+            string_copy(&cf->global.group, (uint8_t *)CONF_DEFAULT_GROUP, sizeof(CONF_DEFAULT_GROUP) - 1);
+        }
+        grp = getgrnam((char *)cf->global.group.data);
+        if (grp == NULL) {
+            log_error("group[%s] not found: %s", cf->global.group.data, strerror(errno));
+            return NC_ERROR;
+        }
+        cf->global.gid = grp->gr_gid;
     }
-    grp = getgrnam((char *)cf->global.group.data);
-    if (grp == NULL) {
-        log_error("group[%s] not found: %s", cf->global.group.data, strerror(errno));
-        return NC_ERROR;
-    }
-    cf->global.gid = grp->gr_gid;
 
     cf->parsed = 1;
 
