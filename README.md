@@ -1,16 +1,16 @@
-# twemproxy (nutcracker) with zone-aware Redis routing
+# twemproxy (nutcracker) with latency-weighted Redis read routing
 
 ## What's different from the original twemproxy?
 
-This fork adds zone-aware read routing for Redis in cloud setups (AWS, GCP, Azure). The idea is simple: when you have read replicas spread across availability zones, send most of your reads to the replica in the same zone as the proxy. That cuts latency and avoids cross-AZ data transfer charges.
+This fork adds latency-weighted read routing for Redis in cloud setups (AWS, GCP, Azure). The idea is simple: when you have read replicas spread across availability zones, send your reads to the replicas that are actually fast (which is usually the ones nearby), and keep the far, slow ones out. That cuts latency, and (optionally) it can lean toward same-AZ replicas to avoid cross-AZ data transfer charges.
 
 It does this without you having to label zones or set thresholds. The proxy measures the real connection latency to each replica and works out which ones are close.
 
 What it adds on top of stock twemproxy:
 
-- Zone-aware routing. Most reads go to the same-AZ replica, with a configurable percentage so you still spread some load.
+- Latency-weighted read routing. Reads go to the good-latency replica set (the healthy replicas whose latency is within `latency_band_factor`x the fastest), weighted by inverse latency, over multiple connections. A fast nearby replica gets most of the reads, several replicas in any AZ share the load, and a far or slow replica is excluded. See "How read routing works" below.
 - Replica discovery from a single reader endpoint. The proxy re-resolves the DNS name on an interval and keeps every IP it sees, so it learns the whole replica set over time.
-- Latency measurement. It tracks the connection latency per replica and prefers the faster ones, which keeps it pointed at the same zone and backs off nodes under pressure.
+- Latency measurement. It tracks the connection latency per replica (a moving average) and weights toward the faster ones, which keeps it pointed at the closer AZ and backs off nodes under pressure.
 - Failover. It handles a replica going away or a DNS record changing without a restart.
 
 ## docker-compose.yml example
@@ -20,7 +20,7 @@ version: '3.3'
 
 services:
   twemproxy:
-    image: bobbymaher/twemproxy:2.1.3
+    image: bobbymaher/twemproxy:2.2.0
     ports:
       - "6378:6378"  # Redis read port
       - "6379:6379"  # Redis write port
@@ -31,8 +31,10 @@ services:
       READ_HOST: "redis-ro.cc.ng.0001.euw1.cache.amazonaws.com:6379"
       WRITE_HOST: "redis.cc.ng.0001.euw1.cache.amazonaws.com:6379"
 
-      # Zone-aware routing
-      ZONE_WEIGHT: "95"                   # 95% of reads to the same-AZ replica
+      # Latency-weighted read routing (these have sensible defaults, so you
+      # can leave them out). zone_weight is gone, do not set it.
+      LATENCY_BAND_FACTOR: "3"            # use every replica within 3x of the fastest
+      CROSS_AZ_SURCHARGE_US: "0"          # 0 = pure latency; raise to lean toward same-AZ
       DNS_RESOLVE_INTERVAL: "30"          # re-resolve DNS every 30 seconds
       DNS_EXPIRATION_MINUTES: "5"         # keep an IP for 5 min after it stops showing up in DNS
       DNS_HEALTH_CHECK_INTERVAL: "30"     # health check every 30 seconds
@@ -99,7 +101,7 @@ For example, AWS with 5 read replicas:
 }
 ```
 
-`current` is the preferred node, and most traffic goes to it, but depending on your config only a percentage of traffic will. If a node gets overloaded and its latency climbs, the proxy starts preferring nodes with lower latency. That keeps reads in the same AZ most of the time, and also takes load off nodes that are slow and probably already under pressure.
+Reads are spread across the good-latency replicas in proportion to inverse latency, so the faster replicas take more requests and the slowest ones in the band take fewer. The far, slow replicas (outside `latency_band_factor`x the fastest) get none. If a node gets overloaded and its latency climbs, its share shrinks (and it drops out of the band entirely once it is too slow), which keeps reads in the closer AZ most of the time and takes load off nodes that are already under pressure. (`current` in the stats is the address one connection happens to be using right now. With many connections fanning out, the request counts above are what tell you how the load is actually split.)
 
 ---
 
@@ -126,7 +128,8 @@ services:
     environment:
       READ_HOST: "your-redis-ro.cache.amazonaws.com:6379"
       WRITE_HOST: "your-redis-primary.cache.amazonaws.com:6379"
-      ZONE_WEIGHT: "95"  # 95% of reads to the same-AZ replica
+      # That is enough. The read pool defaults to latency-weighted routing:
+      # reads fan out across the good-latency replicas, weighted by latency.
 ```
 
 4. Start it:
@@ -153,14 +156,17 @@ redis-cli -p 6379 ping  # write pool
 |----------|---------|-------------|
 | `READ_HOST` | `redis-read:6379` | Redis reader endpoint |
 | `WRITE_HOST` | `redis-write:6379` | Redis primary write endpoint |
-| `ZONE_WEIGHT` | `95` | Percent of reads sent to a same-zone replica |
+| `LATENCY_BAND_FACTOR` | `3` | Keep replicas whose latency is within this multiple of the fastest (sizes the good-latency set) |
+| `CROSS_AZ_SURCHARGE_US` | `0` | Latency (in microseconds) added to a cross-AZ replica's score. 0 = pure latency. Raise it to lean toward same-AZ |
 | `DNS_RESOLVE_INTERVAL` | `30` | DNS re-resolution interval (seconds) |
 | `DNS_EXPIRATION_MINUTES` | `5` | Minutes to keep an address after it stops appearing in DNS |
 | `DNS_HEALTH_CHECK_INTERVAL` | `30` | Health check interval (seconds) |
-| `SERVER_CONNECTIONS` | `1` | Connections per server |
+| `SERVER_CONNECTIONS` | `1` | Connections per server (a starting point; dynamic scaling grows it to one per good-latency replica) |
 | `CONNECTION_MAX_LIFETIME` | `30` | Recycle a connection after N seconds once it goes idle (triggers re-selection) |
-| `DYNAMIC_SERVER_CONNECTIONS` | `false` | Scale connections with the number of DNS addresses |
+| `DYNAMIC_SERVER_CONNECTIONS` | `false` | Scale connections with the number of good-latency replicas. The generated read pool turns this on for you (it sets `dynamic_endpoint`, which defaults this ON), so set it only to force it off |
 | `MAX_SERVER_CONNECTIONS` | `10` | Upper limit for dynamic connection scaling |
+
+The container's generated read pool already sets `zone_aware: true` and `dynamic_endpoint: true`, so latency-weighted routing and replica discovery are on without any extra variables. `ZONE_WEIGHT` is gone: it is no longer rendered into the config and `zone_weight` is deprecated in the binary.
 
 ### Docker build and run
 
@@ -176,7 +182,6 @@ docker run -d \
   -p 22222:22222 \
   -e READ_HOST="my-redis-ro.amazonaws.com:6379" \
   -e WRITE_HOST="my-redis-primary.amazonaws.com:6379" \
-  -e ZONE_WEIGHT="99" \
   twemproxy-enhanced
 ```
 
@@ -195,8 +200,8 @@ services:
     environment:
       READ_HOST: "my-cluster-ro.abc123.ng.0001.use1.cache.amazonaws.com:6379"
       WRITE_HOST: "my-cluster.abc123.ng.0001.use1.cache.amazonaws.com:6379"
-      ZONE_WEIGHT: "100"          # prefer same-AZ, fall back to cross-AZ only when needed
-      DNS_RESOLVE_INTERVAL: "15"  # ElastiCache rotates its reader DNS, so resolve more often
+      CROSS_AZ_SURCHARGE_US: "500" # lean toward same-AZ to cut cross-AZ transfer cost
+      DNS_RESOLVE_INTERVAL: "15"   # ElastiCache rotates its reader DNS, so resolve more often
     restart: unless-stopped
 ```
 
@@ -204,22 +209,28 @@ services:
 
 ## Configuration reference
 
-### Zone-aware routing
+### Latency-weighted read routing
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `zone_aware` | boolean | `false` | Enable zone detection and routing for this pool |
+| `zone_aware` | boolean | `false` | Enable latency measurement and latency-weighted read routing for this pool |
 | `dynamic_endpoint` | boolean | `false` | Treat this pool's server as a DNS name to re-resolve and accumulate addresses from (a reader endpoint). Required for replica discovery. |
-| `zone_weight` | integer | `25` | Percent of reads sent to a same-zone replica (0-100) |
+| `latency_band_factor` | integer | `3` | Size of the good-latency set. Keep healthy replicas whose effective latency is within this multiple of the fastest replica's effective latency. A far or slow replica (outside the band) is excluded. `0` means no banding (keep every healthy replica), which disables far-replica exclusion |
+| `cross_az_surcharge_us` | integer | `0` | Microseconds added to a cross-AZ replica's effective latency before banding and weighting. `0` is pure latency (AZ-agnostic). Raise it to add a cost lean toward same-AZ replicas (for cross-AZ data-transfer charges): a cross-AZ replica then has to be at least this much faster to compete |
+| `zone_weight` | integer | `25` | Deprecated. No longer affects routing. Still parsed for backward compatibility, and the binary logs a one-time warning if you set it. Use `cross_az_surcharge_us` and `latency_band_factor` instead |
 | `dns_resolve_interval` | integer | `30` | DNS re-resolution interval (seconds) |
 
 `dynamic_endpoint` is an explicit opt-in. Earlier versions guessed it from a `-ro` in the hostname, which was a foot-gun: a write pool whose name happened to contain "ro" could quietly start round-robining writes across read replicas on a failover. Now you turn it on per pool, so the write pool stays pinned to the primary.
+
+`zone_weight` is deprecated. It used to set a fixed same-AZ / cross-AZ split. That is gone: reads are now weighted by measured latency over the whole good-latency set, so a fixed percentage no longer makes sense. The binary still accepts the directive (so old configs start) but ignores it for routing and logs a warning. To bias toward same-AZ now, use `cross_az_surcharge_us`.
 
 ### Connection management
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `connection_max_lifetime` | integer | `900` | Force-close (and re-open) a server connection once it is older than N seconds, but only while it is idle. Caps how long a single TCP connection lingers, so DNS changes and replica swaps eventually take effect. |
+| `dynamic_server_connections` | boolean | on for `dynamic_endpoint` pools, otherwise off | Open one connection per good-latency replica (instead of a fixed `server_connections`), so reads fan out across the band. Defaults ON when `dynamic_endpoint` is set, because a reader endpoint resolves to many replicas and the whole point of latency-weighted reads is to spread across them. Capacity caveat: this opens more backend connections per host (up to `max_server_connections` per server), so size your Redis `maxclients` and the host's file-descriptor limit for it. Set it to `false` to pin a single connection |
+| `max_server_connections` | integer | `10` | Upper limit for `dynamic_server_connections` scaling, per server |
 
 ### Health and monitoring
 
@@ -233,38 +244,42 @@ There is no TLS to the Redis backend; traffic is plaintext. The parser does not 
 
 ---
 
-## Zone weight examples
+## Read routing examples
 
-Cost first, minimal cross-AZ traffic:
+The defaults (band factor 3, surcharge 0) are a good starting point: reads spread across every replica within 3x of the fastest, weighted by latency, with no AZ bias. Tune from there.
+
+Lean toward same-AZ to cut cross-AZ transfer cost (a cross-AZ replica must be at least 500us faster to win any share):
 ```yaml
 zone_aware: true
 dynamic_endpoint: true
-zone_weight: 99    # 99% same-AZ, 1% cross-AZ
+cross_az_surcharge_us: 500
 ```
 
-Balanced between cost and load spread:
+Spread wider for more load sharing (keep replicas up to 5x the fastest, not just 3x):
 ```yaml
 zone_aware: true
 dynamic_endpoint: true
-zone_weight: 70    # 70% same-AZ, 30% spread across the rest
+latency_band_factor: 5
 ```
 
-More cross-AZ utilisation:
+Tightest, fastest-only (a replica has to be within 1.5x of the fastest to take any reads):
 ```yaml
 zone_aware: true
 dynamic_endpoint: true
-zone_weight: 40    # 40% same-AZ, 60% spread
+latency_band_factor: 2
+cross_az_surcharge_us: 1000   # strong same-AZ lean on top of the tight band
 ```
 
 ---
 
-## How zone detection works
+## How read routing works
 
 1. Discovery. The proxy resolves the DNS name to find all the server IPs.
-2. Latency. It measures the actual connection latency to each one.
-3. Grouping. It splits them by latency. The same-zone cutoff is the larger of two values: the minimum latency plus 10% of that minimum, or the minimum plus one sixth of the latency range (range = max minus min). A replica at or below that cutoff is same zone, the rest are cross zone. Taking the larger of the two keeps the groups meaningful when all the latencies are very close.
-4. Routing. It sends the configured percentage of reads to the same-zone group.
-5. Re-check. It re-runs the zone analysis every 2 minutes.
+2. Latency. It measures the actual connection latency to each one (a moving average, so a one-off blip does not swing it).
+3. Effective latency. For each healthy replica it computes an effective latency: the measured latency, plus `cross_az_surcharge_us` if the replica is in a different AZ from the proxy. With the default surcharge of 0, effective latency is just measured latency.
+4. Good-latency set. It keeps the replicas whose effective latency is within `latency_band_factor`x the fastest effective latency. Far or slow replicas fall outside the band and are excluded entirely. (The set is capped at `max_server_connections` per server, keeping the lowest-latency ones if there are more.)
+5. Fan-out and weighting. With `dynamic_server_connections` on (the default for a reader endpoint) it opens one connection per replica in the good-latency set, and each read is sent to a replica chosen at random weighted by inverse effective latency. Faster replicas get proportionally more reads; the slowest replica still in the band gets the fewest; excluded replicas get none.
+6. Re-check. It re-runs this analysis as DNS re-resolves and on the health-check tick, so the set and the weights track changing latency.
 
 You do not set zone IDs or latency thresholds. It adapts to whatever infrastructure it is running on, so it works the same on AWS, GCP, Azure, or anywhere else.
 
@@ -272,12 +287,12 @@ You do not set zone IDs or latency thresholds. It adapts to whatever infrastruct
 
 ## Failover
 
-zone_weight is a preference, not a hard pin. The proxy only sends reads to a same-zone replica when there is a healthy one. If a whole zone goes down, its replicas get marked unhealthy and drop out of the pool, so reads move to a healthy replica in another zone on their own. Even at zone_weight: 100 you keep serving reads as long as any zone is up. It only runs out of road when every replica in every zone is unhealthy.
+Routing is latency-driven, not a hard pin. The proxy weights reads across whichever healthy replicas are in the good-latency set. If a whole AZ goes down, its replicas start failing real requests, get marked unhealthy, and drop out, so the good-latency set rebuilds from the survivors and reads move to a healthy replica in another AZ on their own. You keep serving reads as long as any replica anywhere is healthy. It only runs out of road when every replica is unhealthy.
 
-Two things worth knowing if you set it to 100:
+A couple of things worth knowing:
 
-- It is never literally 100%. About 5% of reads go to a random healthy replica, cross-zone included, to keep the latency numbers fresh so the failover targets stay known good.
-- Failover is health driven, and health comes from real request failures. So when a zone drops there is a short window where some reads hit the failing replicas and retry before they get excluded. Set server_failure_limit: 1 and a short server_retry_timeout for fast failover.
+- Even a heavy same-AZ lean (a large `cross_az_surcharge_us`) is still a preference, not a pin. If the same-AZ replicas are unhealthy or gone, the cross-AZ ones are all that is left in the band, so reads go to them. Latency on every replica keeps getting measured, so the failover targets stay known good.
+- Failover is health driven, and health comes from real request failures. So when an AZ drops there is a short window where some reads hit the failing replicas and retry before they get excluded. Set server_failure_limit: 1 and a short server_retry_timeout for fast failover.
 
 ---
 
@@ -355,23 +370,22 @@ curl -s http://localhost:22222 | jq .[0].pools.redis_read.servers[].dns_hosts.ad
 
 ### Logging
 
-Turn up the log level to watch the zone routing:
+Turn up the log level to watch the read routing:
 ```bash
 nutcracker -c nutcracker.yml -v 6 -o /var/log/nutcracker.log
 ```
 
-At level 6 you get two kinds of zone line. When the proxy re-runs zone detection it logs one summary per reader endpoint: how many zones it found, the latency cutoff it used, and the latency range. Then for each read it picks, it logs the chosen address index, the hostname, the measured latency, the assigned zone, and the random draw against `zone_weight` that decided same-zone versus spread. Raise the level to 8 to also see the per-address zone assignments. The exact wording of these lines changes between versions, so match on the address and zone fields rather than the literal text.
+At level 6 you get per-read selection lines: the chosen address index, the hostname, and the measured latency. Raise the level to 8 to also see the per-address effective-latency and good-set decisions. The exact wording of these lines changes between versions, so match on the address and latency fields rather than the literal text. The clearest picture of how reads are actually split is in the stats (`eff_latency`, `weight`, `in_good_set`, and per-address `requests`), not the logs.
 
-### DNS and zone stats
+### DNS and routing stats
 
 - `dns_addresses` - number of resolved IP addresses
 - `dns_resolves` - total DNS resolution attempts
 - `dns_failures` - failed DNS resolution attempts
 - `last_dns_resolved_at` - timestamp of the last DNS resolution
-- `same_zone_selections` - times a same-zone server was picked
-- `cross_zone_selections` - times a cross-zone server was picked
-- `zones_detected` - number of zones detected
 - `current_latency_us` - current connection latency
+
+The per-address fields under `address_details` (below) are where you see the latency weighting: `eff_latency`, `weight`, `in_good_set`, and `requests`. The `same_zone_selections` / `cross_zone_selections` / `zones_detected` counters are legacy from the old fixed-split model and are best-effort only now (routing no longer makes a binary same-zone vs cross-zone choice).
 
 ### DNS host detail
 
@@ -387,37 +401,41 @@ Each server has a `dns_hosts` field:
     "addresses": 4,
     "current_address": 0,
     "zone_aware": true,
-    "zone_weight_percent": 95,
     "zones_detected": 2,
-    "same_zone_servers": 1,
-    "cross_zone_servers": 3,
+    "current_server_connections": 2,
+    "max_server_connections": 10,
+    "dynamic_server_connections": true,
     "address_details": [
       {
         "index": 0,
         "ip": "10.1.2.3",
-        "latency_us": 12000,
+        "latency_us": 600,
+        "eff_latency": 600,
+        "weight": 1666,
+        "in_good_set": true,
         "failures": 0,
-        "zone_id": 1,
-        "zone_type": "same-az",
-        "zone_weight": 95,
         "healthy": true,
-        "current": true
+        "current": true,
+        "requests": 18234
       },
       {
         "index": 1,
         "ip": "10.1.3.4",
-        "latency_us": 45000,
+        "latency_us": 5000,
+        "eff_latency": 5000,
+        "weight": 200,
+        "in_good_set": false,
         "failures": 0,
-        "zone_id": 2,
-        "zone_type": "cross-az",
-        "zone_weight": 5,
         "healthy": true,
-        "current": false
+        "current": false,
+        "requests": 0
       }
     ]
   }
 }
 ```
+
+In this example the second replica is 5000us against the first replica's 600us. With the default `latency_band_factor` of 3 the band cutoff is 1800us, so the second replica is outside it (`in_good_set: false`) and takes no reads (`requests: 0`). The first replica has a far larger `weight` (weight is inverse effective latency), so it serves the traffic.
 
 dns_hosts fields:
 - `type` - "dynamic" for a DNS-resolved server, "static" for a fixed IP
@@ -425,21 +443,28 @@ dns_hosts fields:
 - `dns_resolve_interval` - how often DNS is re-resolved (seconds)
 - `last_resolved` - unix timestamp of the last resolution
 - `addresses` - total resolved IP addresses
-- `current_address` - index of the currently selected IP
-- `zone_aware` - whether zone-aware routing is on
-- `zone_weight_percent` - percent preference for same-zone servers
-- `zones_detected` - number of latency-based zones found
-- `same_zone_servers` - servers in the local zone
-- `cross_zone_servers` - servers in remote zones
+- `current_address` - index of the IP one connection is using now
+- `zone_aware` - whether latency-weighted routing is on
+- `current_server_connections` - how many connections this pool currently opens per server (grows toward the good-set size when `dynamic_server_connections` is on)
+- `max_server_connections` - the cap on that scaling
+- `dynamic_server_connections` - whether connections scale with the good-latency set
+
+The header also emits a few legacy fields from the old zone model (`zone_weight_percent`, `zones_detected`, `same_zone_servers`, `cross_zone_servers`). They are kept for backward compatibility but no longer drive routing.
 
 Per-address fields:
 - `index` - array index of this IP
 - `ip` - the resolved IP
-- `latency_us` - measured latency in microseconds
+- `cname` - the reverse-resolved name for this IP, when known
+- `latency_us` - measured latency in microseconds (a moving average)
+- `eff_latency` - effective latency used for banding and weighting: `latency_us` plus `cross_az_surcharge_us` if this replica is cross-AZ
+- `weight` - the selection weight (inverse of `eff_latency`); a replica with double the weight of another gets roughly double the reads
+- `in_good_set` - whether this replica is in the good-latency band (and so eligible for reads)
+- `requests` - reads sent to this replica (the ground truth for how load is split)
 - `failures` - recent connection failures
-- `zone_id` - assigned zone identifier
-- `zone_type` - "same-az" or "cross-az"
-- `zone_weight` - routing weight for this address
+- `healthy` - whether the address is considered healthy
+- `current` - whether a connection is using this IP right now
+
+The per-address output also carries legacy `zone_id` / `zone_type` / `zone_weight` fields from the old model; routing ignores them now.
 - `healthy` - whether the address is considered healthy
 - `current` - whether this is the selected address
 
@@ -541,7 +566,7 @@ If you are on AWS with a read only endpoint (the hostname usually contains `-ro`
 
 The reader endpoint sits behind round robin DNS with a short TTL, about 15 seconds. If you list it once, the proxy resolves it to a single IP at startup and every read hits the same replica. If you list it many times hoping to hit them all, you often get the same IP back, so the load still does not spread.
 
-With `dynamic_endpoint: true` the proxy re-resolves the name every `dns_resolve_interval` seconds and keeps every IP it sees (it ages one out after `dns_expiration_minutes` once it stops appearing). Over a minute or so it learns the full replica set behind the endpoint and spreads reads across them, then zone-aware routing prefers the closest one. You do not need an external script to rewrite the config.
+With `dynamic_endpoint: true` the proxy re-resolves the name every `dns_resolve_interval` seconds and keeps every IP it sees (it ages one out after `dns_expiration_minutes` once it stops appearing). Over a minute or so it learns the full replica set behind the endpoint, then latency-weighted routing spreads reads across the good-latency replicas (the closer, faster ones get more, the far slow ones get excluded). You do not need an external script to rewrite the config. `dynamic_endpoint` also turns on `dynamic_server_connections` by default, so the proxy opens a connection per good-latency replica and the reads genuinely fan out.
 
 ---
 
@@ -772,7 +797,7 @@ If you are running twemproxy in production, read the [recommendation document](n
 ## docker hub deployment
 
 ```
-TAG=2.1.3
+TAG=2.2.0
 docker build -t twemproxy-enhanced .
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:$TAG
 docker tag twemproxy-enhanced:latest bobbymaher/twemproxy:latest
