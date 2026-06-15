@@ -4,7 +4,6 @@ set -e
 # Set default values if environment variables are not provided
 READ_HOST=${READ_HOST:-"redis-read:6379"}
 WRITE_HOST=${WRITE_HOST:-"redis-write:6379"}
-ZONE_WEIGHT=${ZONE_WEIGHT:-"95"}
 DNS_RESOLVE_INTERVAL=${DNS_RESOLVE_INTERVAL:-"30"}
 DNS_EXPIRATION_MINUTES=${DNS_EXPIRATION_MINUTES:-"5"}
 DNS_HEALTH_CHECK_INTERVAL=${DNS_HEALTH_CHECK_INTERVAL:-"30"}
@@ -12,16 +11,22 @@ SERVER_CONNECTIONS=${SERVER_CONNECTIONS:-"1"}
 DYNAMIC_SERVER_CONNECTIONS=${DYNAMIC_SERVER_CONNECTIONS:-"false"}
 MAX_SERVER_CONNECTIONS=${MAX_SERVER_CONNECTIONS:-"10"}
 CONNECTION_MAX_LIFETIME=${CONNECTION_MAX_LIFETIME:-"30"}
+# Latency-weighted read knobs (Task 5). Defaults match the binary's built-in
+# defaults: 0 == pure latency (no same-AZ cost lean), band factor 3 == "use every
+# replica within 3x of the fastest". zone_weight is deprecated; do not set it.
+CROSS_AZ_SURCHARGE_US=${CROSS_AZ_SURCHARGE_US:-"0"}
+LATENCY_BAND_FACTOR=${LATENCY_BAND_FACTOR:-"3"}
 
 # Create configuration from template (running as root)
 echo "Creating configuration as $(whoami)..."
 echo "Writing to /etc/twemproxy/nutcracker.yml"
 echo "Environment variables:"
-echo "  ZONE_WEIGHT: $ZONE_WEIGHT"
 echo "  SERVER_CONNECTIONS: $SERVER_CONNECTIONS"
 echo "  DYNAMIC_SERVER_CONNECTIONS: $DYNAMIC_SERVER_CONNECTIONS"
 echo "  MAX_SERVER_CONNECTIONS: $MAX_SERVER_CONNECTIONS"
 echo "  CONNECTION_MAX_LIFETIME: $CONNECTION_MAX_LIFETIME"
+echo "  CROSS_AZ_SURCHARGE_US: $CROSS_AZ_SURCHARGE_US"
+echo "  LATENCY_BAND_FACTOR: $LATENCY_BAND_FACTOR"
 
 # Ensure directory exists and is writable
 mkdir -p /etc/twemproxy
@@ -62,10 +67,14 @@ pools:
         server_failure_limit: 1
         server_connections: ${SERVER_CONNECTIONS}
 
-        # Zone-aware configuration
+        # Zone-aware configuration. zone_weight is intentionally NOT rendered:
+        # it is deprecated and the binary logs a warning if present. Reads are
+        # weighted by measured latency; cross_az_surcharge_us is the optional
+        # same-AZ cost lean and latency_band_factor sizes the replica set.
         zone_aware: true
         dynamic_endpoint: true
-        zone_weight: ${ZONE_WEIGHT}
+        cross_az_surcharge_us: ${CROSS_AZ_SURCHARGE_US}
+        latency_band_factor: ${LATENCY_BAND_FACTOR}
         dns_resolve_interval: ${DNS_RESOLVE_INTERVAL}
         dns_expiration_minutes: ${DNS_EXPIRATION_MINUTES}
         dns_health_check_interval: ${DNS_HEALTH_CHECK_INTERVAL}

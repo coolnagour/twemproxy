@@ -1,0 +1,199 @@
+# Docker Compose integration test for the LATENCY-WEIGHTED read distribution
+# (the headline feature of the latency-weighted-reads work). Sibling of
+# docker-compose-test.yml, which proves bare DNS discovery / health / failover;
+# this one proves reads are SPREAD across replicas and WEIGHTED by latency.
+#
+# Why a separate compose file (not the scaled redis-read of the other test)
+# ------------------------------------------------------------------------
+# The discovery test scales ONE redis-read service to N identical containers.
+# That cannot give each replica a DIFFERENT latency. Here we instead run THREE
+# distinct replica containers and give each its own egress delay with
+# `tc qdisc ... netem delay` (needs cap_add: NET_ADMIN + iproute2). All three
+# share ONE Docker network alias `redis-read`, so the alias still resolves to
+# three A-records in a single lookup -- exactly like an ElastiCache reader
+# endpoint -- and the fork's dynamic_endpoint discovers all three. So we keep
+# the real-discovery premise AND get deterministic per-replica latency.
+#
+# The injected skew
+# -----------------
+#   redis-read-near-a  +10ms   } two "near" replicas, both well inside the
+#   redis-read-near-b  +15ms   } latency band (factor 3) -> both USED.
+#   redis-read-far     +200ms    far outside the band -> excluded
+#                                (in_good_set=false, ~zero traffic).
+#
+# Sizing notes (why these numbers, learned from running it):
+#   * The fork measures latency at TCP-CONNECT time, so a sample is ~one round
+#     trip -> roughly 2x the one-way netem delay (e.g. +15ms -> ~30ms measured),
+#     plus EWMA jitter. The two nears are kept CLOSE (10 vs 15ms) so that even
+#     after 2x inflation + noise both stay comfortably within 3x of each other,
+#     making "both nears in band" deterministic (not a coin-flip at the boundary).
+#   * The far replica is set far beyond 3x of the nears (+200ms -> ~400ms
+#     measured) so it is excluded every time, never flickering in.
+#   * The near-a vs near-b lean is small and timing-sensitive; run-latency.sh
+#     reports it as evidence, it is NOT a hard gate. The robust, asserted
+#     directional result is: in-band nears (fast) get traffic, the far one
+#     (slow, out-of-band) gets ~none. The precise inverse-latency split between
+#     same-AZ replicas is AWS-gated (needs real per-AZ latency); see the design.
+#
+# Driven by run-latency.sh on the host. Do not run this compose file by hand.
+
+services:
+  # Write-pool backend: the single primary. Persistence off (throwaway box).
+  redis-write:
+    image: redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks:
+      - twemnet
+
+  # --- Three latency-shaped read replicas, one shared alias `redis-read` ---
+  #
+  # Each replica:
+  #   * is a real replica of redis-write (replicaof) so reads return real data;
+  #   * installs iproute2 then applies its own `tc netem delay` to eth0 BEFORE
+  #     exec'ing redis-server, so EVERY packet (incl. the TCP handshake the fork
+  #     times for latency) carries the delay;
+  #   * joins twemnet under alias `redis-read`, so `redis-read` -> 3 A-records.
+  #
+  # NET_ADMIN is required for tc. Safe here: isolated, trusted test network.
+  # The healthcheck still works through the delay (timeout budgets for it).
+
+  redis-read-near-a:
+    image: redis:7
+    cap_add: ["NET_ADMIN"]
+    # 10ms egress delay. The shell installs iproute2 (not in redis:7), applies
+    # netem, then hands PID 1 to redis-server via exec so signals/stop work.
+    command:
+      - "bash"
+      - "-c"
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null 2>&1
+        tc qdisc add dev eth0 root netem delay 10ms
+        exec redis-server --save "" --appendonly no --protected-mode no \
+             --replicaof redis-write 6379
+    depends_on:
+      redis-write:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      twemnet:
+        aliases: ["redis-read"]
+
+  redis-read-near-b:
+    image: redis:7
+    cap_add: ["NET_ADMIN"]
+    command:
+      - "bash"
+      - "-c"
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null 2>&1
+        tc qdisc add dev eth0 root netem delay 15ms
+        exec redis-server --save "" --appendonly no --protected-mode no \
+             --replicaof redis-write 6379
+    depends_on:
+      redis-write:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      twemnet:
+        aliases: ["redis-read"]
+
+  redis-read-far:
+    image: redis:7
+    cap_add: ["NET_ADMIN"]
+    command:
+      - "bash"
+      - "-c"
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null 2>&1
+        tc qdisc add dev eth0 root netem delay 200ms
+        exec redis-server --save "" --appendonly no --protected-mode no \
+             --replicaof redis-write 6379
+    depends_on:
+      redis-write:
+        condition: service_healthy
+    healthcheck:
+      # 200ms each way: a default 1s ping is plenty, but give it room.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      twemnet:
+        aliases: ["redis-read"]
+
+  # The fork under test, built from this repo's Dockerfile.
+  #
+  # Latency-weighted read pool: dynamic_server_connections ON (opens a connection
+  # per good-latency replica), max 8, band factor 3, pure latency (no cross-AZ
+  # surcharge -- every replica is same-AZ on this flat bridge anyway). SHORT DNS
+  # intervals so it converges in seconds. --stats-addr=0.0.0.0 so run-latency.sh
+  # can scrape /stats from the host.
+  twemproxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: twemproxy-fork:test
+    environment:
+      WRITE_HOST: "redis-write:6379"
+      READ_HOST: "redis-read:6379"
+      DNS_RESOLVE_INTERVAL: "3"
+      DNS_HEALTH_CHECK_INTERVAL: "3"
+      DNS_EXPIRATION_MINUTES: "1"
+      SERVER_CONNECTIONS: "1"
+      DYNAMIC_SERVER_CONNECTIONS: "true"
+      MAX_SERVER_CONNECTIONS: "8"
+      # Short connection lifetime so connections RECYCLE quickly during the test.
+      # Latency is sampled at connect time, and the "prioritise untested replicas"
+      # + periodic-probe paths only run when a NEW connection is created. In prod
+      # this happens naturally over minutes; here we compress it to seconds so
+      # EVERY replica gets its latency measured within the convergence window
+      # (otherwise an unmeasured replica sits at the optimistic default and looks
+      # falsely fast / in-band). This is what makes the band deterministic.
+      CONNECTION_MAX_LIFETIME: "2"
+      CROSS_AZ_SURCHARGE_US: "0"
+      LATENCY_BAND_FACTOR: "3"
+    command:
+      - "/usr/local/sbin/nutcracker"
+      - "--conf-file=/etc/twemproxy/nutcracker.yml"
+      - "--output=/var/log/twemproxy/nutcracker.log"
+      - "--stats-addr=0.0.0.0"
+      - "--stats-port=22222"
+      - "--stats-interval=5000"
+    # Only the stats port is published. Redis traffic is driven from inside the
+    # redis-write backend over twemnet (hitting twemproxy by service name), so
+    # 6378/6379 are NOT published and cannot clash with a local redis.
+    ports:
+      - "22222:22222" # stats (HTTP)
+    depends_on:
+      redis-write:
+        condition: service_healthy
+      redis-read-near-a:
+        condition: service_healthy
+      redis-read-near-b:
+        condition: service_healthy
+      redis-read-far:
+        condition: service_healthy
+    networks:
+      - twemnet
+
+networks:
+  # User-defined bridge -> Docker embedded DNS, which returns all three
+  # A-records for the shared `redis-read` alias.
+  twemnet:
+    driver: bridge
