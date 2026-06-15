@@ -454,6 +454,20 @@ bin_confknobs_prefix="$(build_test test_conf_latency_knobs_prefix \
 # the red against the pre-Task-6 render that did not emit them.
 bin_statsreplica="$(build_test test_stats_replica_fields "$here/test_stats_replica_fields.c")"
 
+# --- latency-weighted reads #7: NULL-addrs health-check crash regression -----
+# Regression for the boot SIGSEGV the docker integration test (run-latency.sh)
+# found: on a read pool's first DNS resolve, server_update_dynamic_connections()
+# ran before dns->addrs was allocated, so server_good_set_size ->
+# server_is_healthy -> server_health_check dereferenced a NULL addrs array (the
+# index bound passed, naddresses was already set). Drives the REAL
+# server_is_healthy / server_good_set_size / server_update_dynamic_connections
+# from nc_server.c against a dynamic server whose dns has naddresses>0 but
+# addrs==NULL, and asserts none of them crash (they return the safe empty
+# answer). Single fixed build: on the fixed tree it exits 0; revert the
+# addrs==NULL guard in server_health_check/server_is_healthy and it SIGSEGVs --
+# the regression, caught without docker.
+bin_nulladdrs="$(build_test test_health_null_addrs "$here/test_health_null_addrs.c")"
+
 echo
 fail=0
 run_test    "$bin_remove" 0 "test_remove_address (single struct shift, fixed build)" || fail=1
@@ -478,6 +492,7 @@ run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted rea
 run_test    "$bin_confknobs" 0 "test_conf_latency_knobs (latency-weighted reads #5 conf knobs + zone_weight deprecation, fixed build)" || fail=1
 run_nonzero "$bin_confknobs_prefix" "test_conf_latency_knobs (latency-weighted reads #5, NO-PARSE pre-Task-5 reproduction)" || fail=1
 run_test    "$bin_statsreplica" 0 "test_stats_replica_fields (latency-weighted reads #6 eff_latency/weight/in_good_set per replica)" || fail=1
+run_test    "$bin_nulladdrs" 0 "test_health_null_addrs (latency-weighted reads #7 NULL-addrs health-check crash regression)" || fail=1
 if [ "$wrap_supported" = "yes" ]; then
     run_test "$bin_dnsintegration" 0 "test_dns_resolve_integration (prod-hardening #4 real server_dns_resolve pipeline via getaddrinfo --wrap)" || fail=1
 else

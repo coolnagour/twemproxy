@@ -1430,15 +1430,20 @@ server_dns_resolve(struct server *server)
     /* If this is the first resolution, just use the new addresses */
     if (dns->addrs == NULL || dns->naddresses == 0) {
         /*
-         * Publish the resolved count first (so server_update_dynamic_connections
-         * sees the same value it did pre-refactor), then build the single
-         * dns_addr array. dns->addrs stays NULL until it is fully allocated, so a
-         * failure leaves a self-consistent empty dns.
+         * Publish the resolved count first, then build the single dns_addr
+         * array. dns->addrs stays NULL until it is fully allocated, so a failure
+         * leaves a self-consistent empty dns.
+         *
+         * server_update_dynamic_connections() is sized from this count, but it is
+         * NOT called here: since Task 4 it sizes the connection target from the
+         * GOOD-LATENCY SET (server_good_set_size -> server_is_healthy ->
+         * server_health_check), which dereferences dns->addrs[i]. The array does
+         * not exist yet on this first-resolution path, so calling it here would
+         * read a NULL dns->addrs and segfault. It is called below, after every
+         * dns_addr is allocated and dns_addr_init'd. (The accumulate path already
+         * calls it after the new address is initialized, so it is consistent.)
          */
         dns->naddresses = new_naddresses;
-
-        /* Update dynamic server connections after initial DNS resolution */
-        server_update_dynamic_connections(server);
 
         /*
          * Validate address count before allocation to prevent excessive memory
@@ -1484,6 +1489,16 @@ server_dns_resolve(struct server *server)
         dns->last_resolved = now;
         log_info("initialized with %"PRIu32" addresses for '%.*s'",
                  dns->naddresses, dns->hostname.len, dns->hostname.data);
+
+        /*
+         * Now that dns->addrs is allocated and every entry is initialized, size
+         * the dynamic connection target from the good-latency set. Must be after
+         * the init loop above: server_good_set_size() health-checks each
+         * dns->addrs[i], which would NULL-deref if called before allocation
+         * (which is why the old call site ahead of the alloc crashed on a
+         * multi-address first resolve with dynamic_server_connections on).
+         */
+        server_update_dynamic_connections(server);
 
         /* Clean up temporary arrays (resolved list + parallel hostname list). */
         if (new_addresses) {
@@ -1963,11 +1978,17 @@ server_select_best_address(struct server *server)
     
     dns = server->dns;
     pool = server->owner;
-    if (dns == NULL || dns->naddresses == 0) {
+    /*
+     * addrs == NULL guard (same transient first-resolution state guarded in
+     * server_good_set_size): below we deref dns->addrs[] and call
+     * server_addr_eff_latency on every index, so bail to index 0 if the array is
+     * not built yet rather than NULL-deref.
+     */
+    if (dns == NULL || dns->naddresses == 0 || dns->addrs == NULL) {
         return 0;
     }
-    
-    
+
+
     /* Allocate array to track healthy servers */
     healthy_servers = nc_alloc(dns->naddresses * sizeof(uint32_t));
     if (healthy_servers == NULL) {
@@ -2298,7 +2319,15 @@ server_good_set_size(struct server *server)
     }
     dns = server->dns;
     pool = server->owner;
-    if (pool == NULL || dns->naddresses == 0) {
+    /*
+     * addrs == NULL with naddresses > 0 is the transient first-resolution state
+     * (count published a step before the array is allocated). Bail to 0 (empty
+     * good set) so neither this loop nor server_addr_eff_latency below can deref
+     * a non-existent array. server_is_healthy() returns its safe "assume healthy"
+     * default for a NULL-addrs dns, so without this guard we would treat indices
+     * as healthy and then dereference dns->addrs[i] for their eff_latency.
+     */
+    if (pool == NULL || dns->naddresses == 0 || dns->addrs == NULL) {
         return 0;
     }
 
@@ -2966,10 +2995,17 @@ server_health_check(struct server *server, uint32_t addr_idx)
     uint32_t latency;
     
     if (server == NULL || !server->is_dynamic || server->dns == NULL ||
-        addr_idx >= server->dns->naddresses) {
+        server->dns->addrs == NULL || addr_idx >= server->dns->naddresses) {
+        /*
+         * addrs == NULL guard: naddresses can be set a step before the addrs
+         * array is allocated on the first-resolution path; without this an
+         * addr_idx < naddresses would pass the bound check and then NULL-deref
+         * &dns->addrs[addr_idx] below. Defense in depth -- the resolve path now
+         * also orders the alloc before any health check.
+         */
         return NC_ERROR;
     }
-    
+
     dns = server->dns;
     pool = server->owner;
     now = nc_usec_now();
@@ -3035,10 +3071,10 @@ server_is_healthy(struct server *server, uint32_t addr_idx)
     struct server_dns *dns;
     
     if (server == NULL || !server->is_dynamic || server->dns == NULL ||
-        addr_idx >= server->dns->naddresses) {
-        return true; /* Assume healthy if we can't check */
+        server->dns->addrs == NULL || addr_idx >= server->dns->naddresses) {
+        return true; /* Assume healthy if we can't check (addrs not built yet) */
     }
-    
+
     dns = server->dns;
 
     /* Perform health check if needed (also marks health_initialized on first run). */
