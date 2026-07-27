@@ -33,6 +33,8 @@ req_get(struct conn *conn)
     return msg;
 }
 
+#ifdef NC_DEBUG_LOG
+
 static void
 req_log(struct msg *req)
 {
@@ -96,6 +98,22 @@ req_log(struct msg *req)
               req_type->len, req_type->data, req->narg, req_len, rsp_len,
               kpos->start, peer_str, req->done, req->error);
 }
+
+#else
+
+/*
+ * The request-completion line above is log_debug(), which compiles to nothing
+ * without NC_DEBUG_LOG -- but its argument prep (gettimeofday, getpeername,
+ * key NUL-patch, type lookup) is real per-request work. Release builds skip
+ * all of it.
+ */
+static void
+req_log(struct msg *req)
+{
+    (void)req;
+}
+
+#endif
 
 void
 req_put(struct msg *msg)
