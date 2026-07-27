@@ -165,3 +165,22 @@ Multi-worker note: with the syscall churn gone, 2-worker CPU/op landed within ~1
 single-worker (26.7 vs 26.5) — the earlier "workers cost +19% CPU/op" penalty was mostly
 epoll_ctl churn. Throughput on the 2-core shared box still favors a single worker; the `auto`
 guidance in the verdict table stands.
+
+## Deployment note (dispatch-dev-1 incident, 2026-07-27)
+
+First rollout of 2.3.0 crash-looped the workers on dispatch-dev-1: its Docker 18.06 seccomp
+profile predates clone3, so glibc (bookworm) pthread_create gets EPERM inside privilege-dropped
+forked workers — resolver_create failure was fatal. Two fixes shipped as 2.3.1:
+
+- resolver_create failure now logs the errno and degrades to the old synchronous DNS path
+  instead of killing the worker (fix(resolver) commit).
+- The staging compose now runs `seccomp:unconfined` (trusted internal host), which restores
+  thread creation, enabling the async resolver AND the stats aggregator thread (whose silent
+  EPERM death was why /health timed out: the stats socket binds before the thread spawns, so
+  the listener existed but nothing accepted).
+
+Diagnostic gotchas hit on the way, recorded for the next incident: modern redis-cli's COMMAND
+handshake is rejected by twemproxy ("Server closed the connection" is a false negative — use a
+raw PING over /dev/tcp); the log volume persists across container generations (grep by today's
+date or old entries masquerade as current); the app's ~30/min ForkGuard ERROR spam is chronic
+and predates any proxy change.
