@@ -134,3 +134,34 @@ the request buffer at nc_request.c:80 — a side effect that only existed to pre
 
 The deployed image on dispatch-dev-1 is 2.1.1; this work lands on develop (2.2.0 line). Benchmark
 comparisons are develop-vs-develop+fixes, not vs the deployed 2.1.1.
+
+## Measured result (branch perf/cpu-reduction, same matrix + host as baseline)
+
+Two iterations were benchmarked. Full deferred flush (every conn) killed all epoll_ctl churn but
+HALVED requests-per-writev to the backend — the old one-tick EPOLLOUT wait had been accidentally
+coalescing two ticks of requests per server writev — costing ~10% unpipelined throughput. The
+landed design is a hybrid: client conns use the flush queue, server conns keep arm-on-empty.
+
+| case | metric | baseline (r1/r2) | hybrid (r1/r2) | delta |
+|---|---|---|---|---|
+| w0-P1 | CPU µs/op | 25.8 / 27.2 | 25.4 / 27.6 | parity (noise) |
+| w0-P1 | GET rps | 30.3k / 29.9k | 30.7k / 28.7k | parity |
+| w0-P16 | CPU µs/op | 7.1 / 7.2 | **4.4 / 4.7** | **−35%** |
+| w0-P16 | SET rps | 120k / 124k | **220k / 199k** | **+65%** |
+| w0-P16 | GET rps | 116k / 128k | **169k / 165k** | **+35%** |
+| w2-P1 | CPU µs/op | 31.4 / 32.0 | **26.8 / 26.7** | **−15%** |
+
+Syscall mix under identical strace windows (counts are strace-throttled; the per-op RATIO is the
+signal): baseline ~5.1 syscalls/op (1 read + 1 writev + 2 epoll_ctl + ~0.95 getpeername); hybrid
+~2.1 syscalls/op (1 read + 1 writev + 0.1 epoll_ctl). getpeername eliminated (Fix 4), epoll_ctl
+−91% (Fix 1 hybrid).
+
+Not benchmarkable here but landed: the event loop no longer blocks in getaddrinfo (Fix 2 — tail
+latency insurance under resolver trouble), and replica EWMA now updates per response instead of
+per connect (Fix 3 — verified by tests/docker/run-latency.sh: spread, band membership and
+failover re-weighting all pass through the patched proxy).
+
+Multi-worker note: with the syscall churn gone, 2-worker CPU/op landed within ~1 µs of
+single-worker (26.7 vs 26.5) — the earlier "workers cost +19% CPU/op" penalty was mostly
+epoll_ctl churn. Throughput on the 2-core shared box still favors a single worker; the `auto`
+guidance in the verdict table stands.
