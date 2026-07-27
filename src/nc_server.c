@@ -38,12 +38,20 @@ server_resolve(struct server *server, struct conn *conn)
     
     /* Check for dynamic DNS updates if enabled */
     if (server->is_dynamic && server->dns != NULL) {
-        status = server_dns_check_update(server);
-        if (status != NC_OK) {
-            log_warn("dynamic DNS check failed for server '%.*s'", 
-                     server->pname.len, server->pname.data);
+        if (server->dns->last_resolved == 0) {
+            /*
+             * Bootstrap only: no address exists yet, so the very first
+             * resolve must happen inline. Every later refresh is async
+             * (core_dns_maintenance -> resolver thread) and this path
+             * just reads the cached addresses.
+             */
+            status = server_dns_check_update(server);
+            if (status != NC_OK) {
+                log_warn("bootstrap DNS resolve failed for server '%.*s'",
+                         server->pname.len, server->pname.data);
+            }
         }
-        
+
         /* Select best address based on latency */
         uint32_t best_idx = server_select_best_address(server);
         if (best_idx < server->dns->naddresses) {

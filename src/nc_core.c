@@ -23,6 +23,7 @@
 #include <nc_server.h>
 #include <nc_proxy.h>
 #include <nc_process.h>
+#include <nc_resolver.h>
 
 static uint32_t ctx_id; /* context generation */
 
@@ -84,6 +85,7 @@ core_ctx_create(struct instance *nci) {
     ctx->evb = NULL;
     array_null(&ctx->pool);
     TAILQ_INIT(&ctx->flush_connq);
+    ctx->resolver = NULL;
     ctx->max_timeout = nci->stats_interval;
     ctx->timeout = ctx->max_timeout;
     ctx->max_nfd = 0;
@@ -195,6 +197,16 @@ core_init_instance(struct instance *nci){
         return NC_ERROR;
     }
 
+    ctx->resolver = resolver_create();
+    if (ctx->resolver == NULL) {
+        event_base_destroy(ctx->evb);
+        stats_destroy(ctx->stats);
+        server_pool_deinit(&ctx->pool);
+        conf_destroy(ctx->cf);
+        nc_free(ctx);
+        return NC_ERROR;
+    }
+
     /* preconnect? servers in server pool */
     status = server_pool_preconnect(ctx);
     if (status != NC_OK) {
@@ -220,6 +232,9 @@ void
 core_ctx_destroy(struct context *ctx)
 {
     log_debug(LOG_VVERB, "destroy ctx %p id %"PRIu32"", ctx, ctx->id);
+    /* join the resolver first so no result can land on freed servers */
+    resolver_destroy(ctx->resolver);
+    ctx->resolver = NULL;
     proxy_deinit(ctx);
     server_pool_disconnect(ctx);
     server_pool_deinit(&ctx->pool);
@@ -391,10 +406,36 @@ core_dns_maintenance(struct context *ctx)
     uint32_t i, j, npool, nserver;
     static int64_t last_dns_check = 0;
     int64_t now;
-    
+    struct resolver_result *res;
+
     now = nc_usec_now();
     if (now < 0) {
         return;
+    }
+
+    /*
+     * Apply finished async resolves on the loop thread. The result rode the
+     * queue with an opaque server pointer; servers live for the lifetime of
+     * the ctx (the resolver is joined before pool teardown), so it is valid
+     * here.
+     */
+    while ((res = resolver_poll(ctx->resolver)) != NULL) {
+        struct server *rserver = res->server;
+
+        rserver->dns->resolve_inflight = 0;
+        if (res->status == NC_OK) {
+            /* apply takes ownership of the arrays */
+            server_dns_apply(rserver, res->addrs, res->hostnames,
+                             res->naddresses);
+            res->addrs = NULL;
+            res->hostnames = NULL;
+            res->naddresses = 0;
+        } else {
+            stats_server_incr(ctx, rserver, dns_failures);
+            log_warn("periodic DNS update failed for '%.*s'",
+                     rserver->pname.len, rserver->pname.data);
+        }
+        resolver_result_free(res);
     }
     
     /* Rate limit DNS checks to every 5 seconds */
@@ -465,55 +506,25 @@ core_dns_maintenance(struct context *ctx)
             struct server *server = array_get(&pool->server, j);
             
             if (server->is_dynamic && server->dns != NULL) {
-                /* Check if DNS resolution is needed */
-                if (server_should_resolve_dns(server)) {
-                    rstatus_t status = server_dns_check_update(server);
-                    if (status == NC_OK) {
-                        /* Show discovered CNAMEs in the log */
-                        struct server_dns *dns = server->dns;
-                        if (dns != NULL && dns->naddresses > 0) {
-                            log_info("periodic DNS update successful for '%.*s' - discovered %"PRIu32" addresses:",
-                                     server->pname.len, server->pname.data, dns->naddresses);
-                            uint32_t k;
-                            for (k = 0; k < dns->naddresses; k++) {
-                                char addr_str[INET6_ADDRSTRLEN];
-                                const char *cname_str = "unknown";
-
-                                /* Convert IP to string */
-                                if (dns->addrs[k].addr.family == AF_INET) {
-                                    struct sockaddr_in *sin = (struct sockaddr_in *)&dns->addrs[k].addr.addr;
-                                    inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
-                                } else if (dns->addrs[k].addr.family == AF_INET6) {
-                                    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&dns->addrs[k].addr.addr;
-                                    inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
-                                } else {
-                                    snprintf(addr_str, sizeof(addr_str), "unknown");
-                                }
-
-                                /* Get CNAME if available */
-                                if (k < dns->naddresses && dns->addrs[k].hostname.data != NULL) {
-                                    cname_str = (const char *)dns->addrs[k].hostname.data;
-                                }
-
-                                /* Per-address dump stays VERBOSE (one line per address,
-                                 * subordinate to the info summary above). It is the only
-                                 * reader of addr_str/cname_str; in a release build
-                                 * log_debug compiles away, so discard them to stay
-                                 * warning-free without losing the debug-build line. */
-                                log_debug(LOG_VERB, "   -> addr[%"PRIu32"]: %s (%s)", k, addr_str, cname_str);
-                                (void)addr_str;
-                                (void)cname_str;
-                            }
-                        } else {
-                            log_info("periodic DNS update successful for '%.*s' (no addresses found)",
-                                     server->pname.len, server->pname.data);
-                        }
+                /*
+                 * Refresh goes through the resolver thread: at most one
+                 * in-flight resolve per server; the result is applied by
+                 * the poll loop at the top of this function on a later
+                 * tick. server_dns_apply logs what was discovered.
+                 */
+                if (server_should_resolve_dns(server) &&
+                    !server->dns->resolve_inflight) {
+                    stats_server_incr(ctx, server, dns_resolves);
+                    if (resolver_submit(ctx->resolver, server,
+                                        &server->dns->hostname,
+                                        server->port,
+                                        server->dns->max_addresses) == NC_OK) {
+                        server->dns->resolve_inflight = 1;
                     } else {
-                        log_warn("periodic DNS update failed for '%.*s'",
-                                  server->pname.len, server->pname.data);
+                        log_warn("failed to queue DNS resolve for '%.*s'",
+                                 server->pname.len, server->pname.data);
                     }
                 }
-                
             }
         }
     }
