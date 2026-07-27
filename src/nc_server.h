@@ -296,6 +296,8 @@ rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64
 rstatus_t server_sample_request_rtt(struct server *server, uint32_t addr_idx,
                                     int64_t rtt_us);
 void free_hostnames_temp(char **hostnames, uint32_t n);
+rstatus_t server_dns_apply(struct server *server, struct sockinfo *new_addresses,
+                           char **new_hostnames, uint32_t new_naddresses);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size);
 

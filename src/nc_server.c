@@ -1384,22 +1384,14 @@ rstatus_t
 server_dns_resolve(struct server *server)
 {
     struct server_dns *dns;
-    struct server_pool *pool;
     rstatus_t status;
-    uint32_t i, j;
     struct sockinfo *new_addresses = NULL;
     uint32_t new_naddresses = 0;
-    int64_t now = nc_usec_now();
-    int64_t expiration_threshold;
-    
+
     ASSERT(server != NULL && server->dns != NULL);
-    
+
     dns = server->dns;
-    pool = server->owner;
-    
-    /* Calculate expiration threshold */
-    expiration_threshold = pool ? pool->dns_expiration_minutes : (5 * 60000000LL); /* 5 minutes default */
-    
+
     /* Resolve new addresses from DNS */
     if (server->owner != NULL && server->owner->ctx != NULL) {
         stats_server_incr(server->owner->ctx, server, dns_resolves);
@@ -1423,7 +1415,37 @@ server_dns_resolve(struct server *server)
 
         return status;
     }
-    
+
+    return server_dns_apply(server, new_addresses, new_hostnames,
+                            new_naddresses);
+}
+
+/*
+ * Apply an already-resolved address set to a server's dns state: first
+ * resolution initializes the addr array, later ones run the
+ * accumulate/expire merge. Takes OWNERSHIP of new_addresses and
+ * new_hostnames on every path (they are temp arrays from the resolve).
+ * This is the loop-side half of the old server_dns_resolve; the async
+ * resolver feeds it results so the merge always runs on the event-loop
+ * thread.
+ */
+rstatus_t
+server_dns_apply(struct server *server, struct sockinfo *new_addresses,
+                 char **new_hostnames, uint32_t new_naddresses)
+{
+    struct server_dns *dns;
+    struct server_pool *pool;
+    uint32_t i, j;
+    int64_t now = nc_usec_now();
+    int64_t expiration_threshold;
+
+    ASSERT(server != NULL && server->dns != NULL);
+
+    dns = server->dns;
+    pool = server->owner;
+
+    expiration_threshold = pool ? pool->dns_expiration_minutes : (5 * 60000000LL); /* 5 minutes default */
+
     log_info("DNS resolved '%.*s' to %"PRIu32" new addresses",
              dns->hostname.len, dns->hostname.data, new_naddresses);
     

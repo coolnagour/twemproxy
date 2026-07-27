@@ -402,6 +402,13 @@ bin_flushq="$(build_test test_flush_queue "$here/test_flush_queue.c")"
 # still-queued request. Needs working localhost resolution (loopback only).
 bin_resolver="$(build_test test_resolver_roundtrip "$here/test_resolver_roundtrip.c")"
 
+# --- perf-cpu #4: loop-side DNS result apply --------------------------------
+# Drives the REAL server_dns_apply() (the post-resolve half of the old
+# server_dns_resolve) with fabricated resolved sets: first-apply init and the
+# accumulate merge, no network. Ownership of the passed arrays transfers to
+# apply on every path; the leaks run guards that.
+bin_dnsapply="$(build_test test_dns_apply "$here/test_dns_apply.c")"
+
 # --- perf-cpu #2: request-RTT EWMA feed guards ------------------------------
 # Drives the REAL server_sample_request_rtt() + server_measure_latency() from
 # nc_server.c against a hand-built server/dns (no network). Asserts the guard
@@ -532,6 +539,7 @@ run_test    "$bin_goodband" 0 "test_good_band (latency-weighted reads #2 eff-lat
 run_test    "$bin_rttsample" 0 "test_rtt_sample (perf-cpu #2 request-RTT EWMA feed guards)" || fail=1
 run_test    "$bin_flushq" 0 "test_flush_queue (perf-cpu #1 deferred-send flush queue semantics)" || fail=1
 run_test    "$bin_resolver" 0 "test_resolver_roundtrip (perf-cpu #3 async resolver thread)" || fail=1
+run_test    "$bin_dnsapply" 0 "test_dns_apply (perf-cpu #4 loop-side DNS result apply)" || fail=1
 run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted reads #3 unified server_select_best_address)" || fail=1
 run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted reads #4 multi-connection count wiring)" || fail=1
 run_test    "$bin_confknobs" 0 "test_conf_latency_knobs (latency-weighted reads #5 conf knobs + zone_weight deprecation, fixed build)" || fail=1
