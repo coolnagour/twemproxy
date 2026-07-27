@@ -285,8 +285,12 @@ rsp_recv_done(struct context *ctx, struct conn *conn, struct msg *msg,
     ASSERT(nmsg == NULL || !nmsg->request);
 
     pmsg = TAILQ_FIRST(&conn->omsg_q);
-    if (pmsg) {
-        stats_server_record_latency(ctx, conn->owner, nc_msec_now()-pmsg->forward_start_ts);
+    if (pmsg && pmsg->forward_start_ts > 0) {
+        int64_t rtt_us = nc_usec_now() - pmsg->forward_start_ts;
+
+        stats_server_record_latency(ctx, conn->owner, rtt_us / 1000);
+        /* keep the replica EWMA tracking live latency, not just connect time */
+        server_sample_request_rtt(conn->owner, conn->addr_idx, rtt_us);
     }
 
     /* enqueue next message (response), if any */

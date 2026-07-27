@@ -2465,6 +2465,32 @@ server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency
     return NC_OK;
 }
 
+/*
+ * Feed one request round-trip time into the same EWMA that connect-time
+ * measurement uses, so replica weights keep tracking live latency between
+ * connection-churn events. Guards make this safe to call from the response
+ * path: a DNS refresh can shrink addrs while a response is in flight, and a
+ * clock step can make the delta negative.
+ */
+rstatus_t
+server_sample_request_rtt(struct server *server, uint32_t addr_idx,
+                          int64_t rtt_us)
+{
+    struct server_dns *dns;
+
+    if (server == NULL || !server->is_dynamic) {
+        return NC_ERROR;
+    }
+    dns = server->dns;
+    if (dns == NULL || dns->addrs == NULL || addr_idx >= dns->naddresses) {
+        return NC_ERROR;
+    }
+    if (rtt_us < 0) {
+        return NC_ERROR;
+    }
+    return server_measure_latency(server, addr_idx, rtt_us);
+}
+
 bool
 server_should_resolve_dns(struct server *server)
 {

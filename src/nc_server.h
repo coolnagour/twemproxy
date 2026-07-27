@@ -292,6 +292,8 @@ uint32_t server_build_good_set(const uint32_t *healthy_idxs,
 uint32_t server_good_set_size(struct server *server);
 void server_update_dynamic_connections(struct server *server);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
+rstatus_t server_sample_request_rtt(struct server *server, uint32_t addr_idx,
+                                    int64_t rtt_us);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size);
 
