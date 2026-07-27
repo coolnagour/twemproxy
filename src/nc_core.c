@@ -197,14 +197,16 @@ core_init_instance(struct instance *nci){
         return NC_ERROR;
     }
 
+    /*
+     * The async resolver is an optimization, not a requirement: without it
+     * DNS refresh falls back to the old synchronous path inside
+     * core_dns_maintenance. Thread creation can fail under restrictive
+     * sandboxes (old container runtimes), and that must not kill the worker.
+     */
     ctx->resolver = resolver_create();
     if (ctx->resolver == NULL) {
-        event_base_destroy(ctx->evb);
-        stats_destroy(ctx->stats);
-        server_pool_deinit(&ctx->pool);
-        conf_destroy(ctx->cf);
-        nc_free(ctx);
-        return NC_ERROR;
+        log_warn("async DNS resolver unavailable - falling back to "
+                 "synchronous DNS refresh");
     }
 
     /* preconnect? servers in server pool */
@@ -419,7 +421,8 @@ core_dns_maintenance(struct context *ctx)
      * the ctx (the resolver is joined before pool teardown), so it is valid
      * here.
      */
-    while ((res = resolver_poll(ctx->resolver)) != NULL) {
+    while (ctx->resolver != NULL &&
+           (res = resolver_poll(ctx->resolver)) != NULL) {
         struct server *rserver = res->server;
 
         rserver->dns->resolve_inflight = 0;
@@ -514,15 +517,20 @@ core_dns_maintenance(struct context *ctx)
                  */
                 if (server_should_resolve_dns(server) &&
                     !server->dns->resolve_inflight) {
-                    stats_server_incr(ctx, server, dns_resolves);
-                    if (resolver_submit(ctx->resolver, server,
-                                        &server->dns->hostname,
-                                        server->port,
-                                        server->dns->max_addresses) == NC_OK) {
-                        server->dns->resolve_inflight = 1;
+                    if (ctx->resolver == NULL) {
+                        /* no resolver thread: old synchronous refresh */
+                        server_dns_check_update(server);
                     } else {
-                        log_warn("failed to queue DNS resolve for '%.*s'",
-                                 server->pname.len, server->pname.data);
+                        stats_server_incr(ctx, server, dns_resolves);
+                        if (resolver_submit(ctx->resolver, server,
+                                            &server->dns->hostname,
+                                            server->port,
+                                            server->dns->max_addresses) == NC_OK) {
+                            server->dns->resolve_inflight = 1;
+                        } else {
+                            log_warn("failed to queue DNS resolve for '%.*s'",
+                                     server->pname.len, server->pname.data);
+                        }
                     }
                 }
             }

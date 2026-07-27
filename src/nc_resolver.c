@@ -90,6 +90,7 @@ struct resolver *
 resolver_create(void)
 {
     struct resolver *r;
+    int status;
 
     r = nc_zalloc(sizeof(*r));
     if (r == NULL) {
@@ -98,15 +99,19 @@ resolver_create(void)
     STAILQ_INIT(&r->reqq);
     STAILQ_INIT(&r->resq);
     if (pthread_mutex_init(&r->mtx, NULL) != 0) {
+        log_error("resolver mutex init failed: %s", strerror(errno));
         nc_free(r);
         return NULL;
     }
     if (pthread_cond_init(&r->cv, NULL) != 0) {
+        log_error("resolver cond init failed: %s", strerror(errno));
         pthread_mutex_destroy(&r->mtx);
         nc_free(r);
         return NULL;
     }
-    if (pthread_create(&r->tid, NULL, resolver_loop, r) != 0) {
+    status = pthread_create(&r->tid, NULL, resolver_loop, r);
+    if (status != 0) {
+        log_error("resolver thread create failed: %s", strerror(status));
         pthread_cond_destroy(&r->cv);
         pthread_mutex_destroy(&r->mtx);
         nc_free(r);
