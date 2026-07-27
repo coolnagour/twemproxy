@@ -263,10 +263,7 @@ rsp_forward(struct context *ctx, struct conn *s_conn, struct msg *msg)
     ASSERT(c_conn->client && !c_conn->proxy);
 
     if (req_done(c_conn, TAILQ_FIRST(&c_conn->omsg_q))) {
-        status = event_add_out(ctx->evb, c_conn);
-        if (status != NC_OK) {
-            c_conn->err = errno;
-        }
+        conn_pend_flush(ctx, c_conn);
     }
 
     rsp_forward_stats(ctx, s_conn->owner, msg, msgsize);

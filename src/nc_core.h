@@ -131,6 +131,7 @@ struct context {
 
     struct array       pool;        /* server_pool[] */
     struct event_base  *evb;        /* event base */
+    struct conn_tqh    flush_connq; /* conns with deferred sends this tick */
     int                max_timeout; /* max timeout in msec */
     int                timeout;     /* timeout in msec */
 
@@ -169,6 +170,7 @@ rstatus_t core_init_instance(struct instance *nci);
 void core_stop(struct context *ctx);
 rstatus_t core_core(void *evb, void *arg, uint32_t events);
 rstatus_t core_loop(struct context *ctx);
+void core_flush_drain(struct context *ctx);
 void core_ctx_destroy(struct context *ctx);
 
 /*

@@ -388,6 +388,13 @@ bin_weightedpick="$(build_test test_weighted_pick "$here/test_weighted_pick.c")"
 # Single fixed build.
 bin_goodband="$(build_test test_good_band "$here/test_good_band.c")"
 
+# --- perf-cpu #1: deferred-send flush queue ---------------------------------
+# Drives the REAL conn_pend_flush/conn_unpend_flush/conn_send_pending
+# (nc_connection.c) + core_flush_drain (nc_core.c) against fabricated
+# ctx/conns with a stub conn->send. Asserts idempotent membership, the
+# pending-data contract, and the drain skip rules (err/done/connecting).
+bin_flushq="$(build_test test_flush_queue "$here/test_flush_queue.c")"
+
 # --- perf-cpu #2: request-RTT EWMA feed guards ------------------------------
 # Drives the REAL server_sample_request_rtt() + server_measure_latency() from
 # nc_server.c against a hand-built server/dns (no network). Asserts the guard
@@ -516,6 +523,7 @@ run_test    "$bin_statshttp" 0 "test_stats_http (prod-hardening #3 HTTP-aware st
 run_test    "$bin_weightedpick" 0 "test_weighted_pick (latency-weighted reads #1 pure weighted picker)" || fail=1
 run_test    "$bin_goodband" 0 "test_good_band (latency-weighted reads #2 eff-latency + good-latency band)" || fail=1
 run_test    "$bin_rttsample" 0 "test_rtt_sample (perf-cpu #2 request-RTT EWMA feed guards)" || fail=1
+run_test    "$bin_flushq" 0 "test_flush_queue (perf-cpu #1 deferred-send flush queue semantics)" || fail=1
 run_test    "$bin_selectweighted" 0 "test_select_weighted (latency-weighted reads #3 unified server_select_best_address)" || fail=1
 run_test    "$bin_dynconncount" 0 "test_dynamic_conn_count (latency-weighted reads #4 multi-connection count wiring)" || fail=1
 run_test    "$bin_confknobs" 0 "test_conf_latency_knobs (latency-weighted reads #5 conf knobs + zone_weight deprecation, fixed build)" || fail=1

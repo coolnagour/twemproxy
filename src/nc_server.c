@@ -472,7 +472,7 @@ server_close(struct context *ctx, struct conn *conn)
             }
 
             if (req_done(c_conn, TAILQ_FIRST(&c_conn->omsg_q))) {
-                event_add_out(ctx->evb, msg->owner);
+                conn_pend_flush(ctx, msg->owner);
             }
 
             log_debug(LOG_INFO, "close s %d schedule error for req %"PRIu64" "
@@ -505,7 +505,7 @@ server_close(struct context *ctx, struct conn *conn)
             }
 
             if (req_done(c_conn, TAILQ_FIRST(&c_conn->omsg_q))) {
-                event_add_out(ctx->evb, msg->owner);
+                conn_pend_flush(ctx, msg->owner);
             }
 
             log_debug(LOG_INFO, "close s %d schedule error for req %"PRIu64" "

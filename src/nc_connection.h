@@ -40,6 +40,7 @@ typedef void (*conn_swallow_msg_t)(struct conn *, struct msg *, struct msg *);
 
 struct conn {
     TAILQ_ENTRY(conn)   conn_tqe;        /* link in server_pool / server / free q */
+    TAILQ_ENTRY(conn)   flush_tqe;       /* link in ctx flush q (deferred send) */
     void                *owner;          /* connection owner - server_pool / server */
 
     int                 sd;              /* socket descriptor */
@@ -90,6 +91,7 @@ struct conn {
     unsigned            redis:1;         /* redis? */
     unsigned            authenticated:1; /* authenticated? */
     unsigned            lifetime_expired:1; /* closed due to max lifetime? */
+    unsigned            in_flushq:1;     /* queued for end-of-tick send flush? */
     
     int64_t             connect_start_ts; /* connection start timestamp (usec) */
     uint32_t            addr_idx;        /* address index being used for this connection */
@@ -101,6 +103,9 @@ struct context *conn_to_ctx(struct conn *conn);
 struct conn *conn_get(void *owner, bool client, bool redis);
 struct conn *conn_get_proxy(void *owner);
 void conn_put(struct conn *conn);
+void conn_pend_flush(struct context *ctx, struct conn *conn);
+void conn_unpend_flush(struct context *ctx, struct conn *conn);
+bool conn_send_pending(struct conn *conn);
 ssize_t conn_recv(struct conn *conn, void *buf, size_t size);
 ssize_t conn_sendv(struct conn *conn, struct array *sendv, size_t nsend);
 void conn_init(void);

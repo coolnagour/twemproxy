@@ -158,6 +158,7 @@ _conn_get(void)
     conn->redis = 0;
     conn->authenticated = 0;
     conn->lifetime_expired = 0;
+    conn->in_flushq = 0;
 
     ntotal_conn++;
     ncurr_conn++;
@@ -291,6 +292,55 @@ conn_free(struct conn *conn)
 {
     log_debug(LOG_VVERB, "free conn %p", conn);
     nc_free(conn);
+}
+
+/*
+ * Deferred-send flush queue. Message-enqueue sites schedule the conn here
+ * instead of arming EPOLLOUT; core_flush_drain() sends once per event-loop
+ * tick, so everything enqueued during one tick still coalesces into one
+ * writev and the epoll_ctl arm/disarm pair disappears in the drained-clean
+ * case.
+ */
+void
+conn_pend_flush(struct context *ctx, struct conn *conn)
+{
+    if (conn->in_flushq) {
+        return;
+    }
+    TAILQ_INSERT_TAIL(&ctx->flush_connq, conn, flush_tqe);
+    conn->in_flushq = 1;
+}
+
+void
+conn_unpend_flush(struct context *ctx, struct conn *conn)
+{
+    if (!conn->in_flushq) {
+        return;
+    }
+    TAILQ_REMOVE(&ctx->flush_connq, conn, flush_tqe);
+    conn->in_flushq = 0;
+}
+
+/*
+ * True iff the conn still has sendable-but-unsent data. After msg_send
+ * returns, smsg is always NULL; a partially-written request stays at the
+ * head of imsg_q (send_done only dequeues fully-sent msgs), and a sendable
+ * response is an omsg_q head whose request is done.
+ */
+bool
+conn_send_pending(struct conn *conn)
+{
+    if (conn->smsg != NULL) {
+        return true;
+    }
+    if (conn->proxy) {
+        return false;
+    }
+    if (conn->client) {
+        struct msg *pmsg = TAILQ_FIRST(&conn->omsg_q);
+        return pmsg != NULL && req_done(conn, pmsg);
+    }
+    return !TAILQ_EMPTY(&conn->imsg_q);
 }
 
 void

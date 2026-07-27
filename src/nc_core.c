@@ -83,6 +83,7 @@ core_ctx_create(struct instance *nci) {
     ctx->stats = NULL;
     ctx->evb = NULL;
     array_null(&ctx->pool);
+    TAILQ_INIT(&ctx->flush_connq);
     ctx->max_timeout = nci->stats_interval;
     ctx->timeout = ctx->max_timeout;
     ctx->max_nfd = 0;
@@ -307,6 +308,8 @@ core_close(struct context *ctx, struct conn *conn)
     char type, *addrstr;
 
     ASSERT(conn->sd > 0);
+
+    conn_unpend_flush(ctx, conn);
 
     if (conn->client) {
         type = 'c';
@@ -607,6 +610,46 @@ core_core(void *evb, void *arg, uint32_t events)
     return NC_OK;
 }
 
+/*
+ * Send everything scheduled during this tick. Pop-head iteration: processing
+ * a conn can close other conns (server_close pends error responses at
+ * clients) which may unlink or append queue entries, so a saved-next pointer
+ * could dangle. err/done conns are skipped, not closed here -- their armed
+ * READ event delivers them to the normal close path. connecting conns are
+ * skipped -- connect completion arrives via the EPOLLOUT that
+ * event_add_conn armed, and writing before the handshake completes would
+ * fail with ENOTCONN.
+ */
+void
+core_flush_drain(struct context *ctx)
+{
+    struct conn *conn;
+
+    while ((conn = TAILQ_FIRST(&ctx->flush_connq)) != NULL) {
+        conn_unpend_flush(ctx, conn);
+
+        if (conn->err != 0 || conn->done) {
+            continue;
+        }
+        if (conn->connecting) {
+            continue;
+        }
+
+        if (conn->send(ctx, conn) != NC_OK || conn->err != 0 || conn->done) {
+            core_close(ctx, conn);
+            continue;
+        }
+
+        if (conn_send_pending(conn)) {
+            /* partial write / EAGAIN: fall back to EPOLLOUT for the rest */
+            if (event_add_out(ctx->evb, conn) != 0) {
+                conn->err = errno;
+                core_close(ctx, conn);
+            }
+        }
+    }
+}
+
 rstatus_t
 core_loop(struct context *ctx)
 {
@@ -618,9 +661,11 @@ core_loop(struct context *ctx)
     }
 
     core_timeout(ctx);
-    
+
     /* Periodic DNS maintenance for dynamic servers */
     core_dns_maintenance(ctx);
+
+    core_flush_drain(ctx);
 
     stats_swap(ctx->stats);
 

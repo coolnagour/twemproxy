@@ -871,8 +871,6 @@ msg_send(struct context *ctx, struct conn *conn)
     rstatus_t status;
     struct msg *msg;
 
-    ASSERT(conn->send_active);
-
     conn->send_ready = 1;
     do {
         msg = conn->send_next(ctx, conn);
