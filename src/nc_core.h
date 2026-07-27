@@ -79,6 +79,7 @@ struct string;
 struct context;
 struct conn;
 struct conn_tqh;
+struct resolver;
 struct msg;
 struct msg_tqh;
 struct server;
@@ -136,6 +137,7 @@ struct context {
     int                timeout;     /* timeout in msec */
 
     char               *shared_mem; /* shared memory for current worker for stats */
+    struct resolver    *resolver;   /* background DNS resolver thread */
 
     uint32_t           max_nfd;     /* max # files */
     uint32_t           max_ncconn;  /* max # client connections */

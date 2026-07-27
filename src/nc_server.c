@@ -1364,7 +1364,7 @@ server_dns_remove_address_at(struct server_dns *dns, uint32_t i)
  * with the same element count, so the frees stay identical and the paths are
  * mutually exclusive (no double-free).
  */
-static void
+void
 free_hostnames_temp(char **hostnames, uint32_t n)
 {
     uint32_t i;

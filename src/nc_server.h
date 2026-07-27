@@ -105,6 +105,7 @@ struct server_dns {
     uint32_t           naddresses;        /* Number of resolved IPs (live entries in addrs) */
     uint32_t           max_addresses;     /* Maximum addresses (cap; addrs is sized to this) */
     int64_t            last_resolved;     /* Last DNS resolution time */
+    unsigned           resolve_inflight:1; /* async resolve queued, result pending */
     int64_t            resolve_interval;  /* DNS re-resolution interval (usec) */
 
     /* Enhanced health monitoring */
@@ -294,6 +295,7 @@ void server_update_dynamic_connections(struct server *server);
 rstatus_t server_measure_latency(struct server *server, uint32_t addr_idx, int64_t latency);
 rstatus_t server_sample_request_rtt(struct server *server, uint32_t addr_idx,
                                     int64_t rtt_us);
+void free_hostnames_temp(char **hostnames, uint32_t n);
 bool server_should_resolve_dns(struct server *server);
 rstatus_t server_get_read_hosts_info(struct server *server, const char *key, char *buffer, size_t buffer_size);
 

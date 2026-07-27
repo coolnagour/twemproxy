@@ -42,6 +42,7 @@ nutcracker_SOURCES =			\
 	nc_message.c nc_message.h	\
 	nc_request.c			\
 	nc_response.c			\
+	nc_resolver.c nc_resolver.h	\
 	nc_mbuf.c nc_mbuf.h		\
 	nc_conf.c nc_conf.h		\
 	nc_stats.c nc_stats.h		\
